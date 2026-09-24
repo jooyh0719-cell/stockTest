@@ -13,8 +13,8 @@ API_BASE_URL = "https://openapi.tossinvest.com"
 # =====================================================================
 # 예시: TQQQ 60%, SOXL 40% 설정 (1개 종목만 할 경우 "TQQQ": {"allocation_ratio": 1.00} 설정)
 PORTFOLIO_CONFIG = {
-    "TQQQ": {"allocation_ratio": 0.60},
-    "SOXL": {"allocation_ratio": 0.40}
+    # "TQQQ": {"allocation_ratio": 0.60},
+    "SOXL": {"allocation_ratio": 1.00}
 }
 
 def get_access_token():
