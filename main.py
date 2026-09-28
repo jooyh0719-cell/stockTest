@@ -46,34 +46,53 @@ def get_access_token():
     else:
         raise Exception(f"토큰 발급 실패: {res.text}")
 
-def get_account_summary(token):
-    headers = {"Authorization": f"Bearer {token}"}
-    
-    # 계좌번호 파라미터 추가
-    params = {}
+def get_headers(token):
+    """토스 Open API 요청 시 필수 공통 헤더"""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
     if ACCOUNT_NO:
-        params["account_no"] = ACCOUNT_NO
+        # 토스증권 계좌 식별자 헤더 (서버 규격에 맞게 계좌 지정)
+        headers["X-Toss-Account-Number"] = ACCOUNT_NO
+        headers["X-Tossinvest-Account"] = ACCOUNT_NO
+    return headers
 
-    # 1. 예수금 조회
-    acc_res = requests.get(f"{API_BASE_URL}/v1/account/balance", headers=headers, params=params, proxies=proxies, timeout=10)
+def get_account_summary(token):
+    headers = get_headers(token)
+
+    # 1. 예수금 / 매수 가능 금액 조회 (/api/v1/buying-power 또는 /api/v1/accounts)
     cash_balance = 0.0
+    acc_res = requests.get(f"{API_BASE_URL}/api/v1/buying-power", headers=headers, proxies=proxies, timeout=10)
+    
     if acc_res.status_code == 200:
         acc_data = acc_res.json()
-        cash_balance = float(acc_data.get("output", {}).get("dnca_tot_amt", acc_data.get("cash_balance", 0.0)))
+        # API 응답 구조에 따라 구매가능금액/예수금 파싱
+        cash_balance = float(acc_data.get("buyingPower", acc_data.get("cashBalance", acc_data.get("amount", 0.0))))
     else:
-        print(f"⚠️ 예수금 조회 응답 오류: {acc_res.text}")
+        # 백업 경로: /api/v1/accounts 호출 시도
+        acc_res_backup = requests.get(f"{API_BASE_URL}/api/v1/accounts", headers=headers, proxies=proxies, timeout=10)
+        if acc_res_backup.status_code == 200:
+            acc_data = acc_res_backup.json()
+            if isinstance(acc_data, list) and len(acc_data) > 0:
+                cash_balance = float(acc_data[0].get("buyingPower", acc_data[0].get("cashBalance", 0.0)))
+            elif isinstance(acc_data, dict):
+                cash_balance = float(acc_data.get("buyingPower", acc_data.get("cashBalance", 0.0)))
+        else:
+            print(f"⚠️ 예수금 조회 응답 오류: {acc_res.text}")
 
-    # 2. 보유 포지션 조회
-    pos_res = requests.get(f"{API_BASE_URL}/v1/account/positions", headers=headers, params=params, proxies=proxies, timeout=10)
+    # 2. 보유 포지션 조회 (/api/v1/holdings)
+    pos_res = requests.get(f"{API_BASE_URL}/api/v1/holdings", headers=headers, proxies=proxies, timeout=10)
     positions = {}
     if pos_res.status_code == 200:
         pos_data = pos_res.json()
-        items = pos_data.get("positions", pos_data.get("output", []))
+        # holdings 목록 추출
+        items = pos_data if isinstance(pos_data, list) else pos_data.get("holdings", pos_data.get("items", []))
         for item in items:
-            sym = item.get("symbol", item.get("pdno"))
-            qty = int(item.get("quantity", item.get("hldg_qty", 0)))
-            avg_p = float(item.get("average_price", item.get("pavg", 0.0)))
-            if qty > 0:
+            sym = item.get("symbol", item.get("ticker"))
+            qty = int(item.get("quantity", item.get("shares", 0)))
+            avg_p = float(item.get("averagePrice", item.get("avgPrice", 0.0)))
+            if sym and qty > 0:
                 positions[sym] = {"shares": qty, "avg_price": avg_p}
     else:
         print(f"⚠️ 포지션 조회 응답 오류: {pos_res.text}")
@@ -94,31 +113,31 @@ def get_current_price(symbol):
 
 def place_order(token, symbol, side, order_type, price, quantity):
     """토스증권 API 주문 전송 및 응답 검증"""
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json"
-    }
+    headers = get_headers(token)
     
     valid_order_type = "LIMIT" if order_type == "LOC" else order_type
     
     payload = {
         "symbol": symbol,
-        "side": side,
-        "order_type": valid_order_type,
+        "side": side,  # "BUY" 또는 "SELL"
+        "orderType": valid_order_type,
         "price": str(round(price, 2)),
-        "quantity": str(quantity)
+        "quantity": int(quantity)
     }
     if ACCOUNT_NO:
-        payload["account_no"] = ACCOUNT_NO
+        payload["accountNo"] = ACCOUNT_NO
 
-    res = requests.post(f"{API_BASE_URL}/v1/orders", headers=headers, json=payload, proxies=proxies, timeout=10)
-    res_data = res.json()
+    res = requests.post(f"{API_BASE_URL}/api/v1/orders", headers=headers, json=payload, proxies=proxies, timeout=10)
     
-    # API 호출 결과 로그 출력
-    if res.status_code in [200, 201] and res_data.get("status") != "FAILED":
+    try:
+        res_data = res.json()
+    except Exception:
+        res_data = res.text
+
+    if res.status_code in [200, 201]:
         print(f"   ✅ 주문 성공 응답: {res_data}")
     else:
-        print(f"   ❌ 주문 실패 응답: {res_data}")
+        print(f"   ❌ 주문 실패 응답 (상태코드 {res.status_code}): {res_data}")
         
     return res_data
 
