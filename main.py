@@ -45,8 +45,8 @@ def get_access_token():
     else:
         raise Exception(f"토큰 발급 실패: {res.text}")
 
-def fetch_primary_account_no(token):
-    """토스 API 계좌 목록에서 계좌 식별자(accountNo / accountNumber 등)를 추출합니다."""
+def fetch_primary_account_info(token):
+    """토스 API 계좌 목록에서 accountNo 및 accountSeq 추출"""
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
@@ -55,40 +55,38 @@ def fetch_primary_account_no(token):
     
     if res.status_code == 200:
         data = res.json()
-        print(f"📋 [계좌 응답 데이터 구조]: {data}")
-        
         accounts = data.get("result", []) if isinstance(data, dict) else data
         if accounts and len(accounts) > 0:
             first_acc = accounts[0]
-            # 가능한 모든 계좌 식별 키 탐색
-            acc_id = (
-                first_acc.get("accountNo") or 
-                first_acc.get("accountNumber") or 
-                first_acc.get("accountId") or 
-                first_acc.get("accountKey")
-            )
-            print(f"✅ [계좌 자동 감지 성공] 사용할 Account Identifier: {acc_id}")
-            return str(acc_id)
+            acc_no = first_acc.get("accountNo")
+            acc_seq = first_acc.get("accountSeq")
+            print(f"✅ [계좌 자동 감지 성공] accountNo: {acc_no} | accountSeq: {acc_seq}")
+            return str(acc_no), str(acc_seq)
         else:
             raise Exception("❌ 연동된 토스증권 계좌를 찾을 수 없습니다.")
     else:
         raise Exception(f"❌ 계좌 목록 조회 실패: {res.text}")
 
-def get_headers(token, account_no):
-    """토스 API 헤더 생성"""
+def get_headers(token, account_val):
     return {
         "Authorization": f"Bearer {token}",
-        "X-Tossinvest-Account": str(account_no),
+        "x-tossinvest-account": str(account_val),
         "Content-Type": "application/json"
     }
 
-def get_account_summary(token, account_no):
-    headers = get_headers(token, account_no)
-
-    # 1. 예수금 / 매수 가능 금액 조회
-    cash_balance = 0.0
+def get_account_summary(token, acc_no, acc_seq):
+    # 1차 시도: accountSeq 사용 (토스 API 표준 규격)
+    headers = get_headers(token, acc_seq)
+    
     acc_res = requests.get(f"{API_BASE_URL}/api/v1/buying-power", headers=headers, proxies=proxies, timeout=10)
     
+    # 만약 accountSeq로 실패 시 accountNo로 2차 재시도
+    if acc_res.status_code != 200:
+        print(f"🔄 accountSeq({acc_seq}) 호출 실패. accountNo({acc_no})로 재시도합니다...")
+        headers = get_headers(token, acc_no)
+        acc_res = requests.get(f"{API_BASE_URL}/api/v1/buying-power", headers=headers, proxies=proxies, timeout=10)
+
+    cash_balance = 0.0
     if acc_res.status_code == 200:
         acc_data = acc_res.json()
         cash_balance = float(acc_data.get("buyingPower", acc_data.get("cashBalance", acc_data.get("amount", 0.0))))
@@ -96,7 +94,7 @@ def get_account_summary(token, account_no):
     else:
         print(f"⚠️ 예수금 조회 응답 오류 (상태 {acc_res.status_code}): {acc_res.text}")
 
-    # 2. 보유 포지션 조회
+    # 보유 포지션 조회
     pos_res = requests.get(f"{API_BASE_URL}/api/v1/holdings", headers=headers, proxies=proxies, timeout=10)
     positions = {}
     if pos_res.status_code == 200:
@@ -112,7 +110,7 @@ def get_account_summary(token, account_no):
     else:
         print(f"⚠️ 포지션 조회 응답 오류 (상태 {pos_res.status_code}): {pos_res.text}")
 
-    return cash_balance, positions
+    return cash_balance, positions, headers
 
 def get_current_price(symbol):
     try:
@@ -126,8 +124,7 @@ def get_current_price(symbol):
         print(f"❌ {symbol} 주가 조회 예외 발생: {e}")
         return None
 
-def place_order(token, account_no, symbol, side, order_type, price, quantity):
-    headers = get_headers(token, account_no)
+def place_order(headers, symbol, side, order_type, price, quantity):
     valid_order_type = "LIMIT" if order_type == "LOC" else order_type
     
     payload = {
@@ -157,10 +154,10 @@ def run_dynamic_multi_infinite_buying():
     try:
         token = get_access_token()
         
-        # 계좌번호 식별자 자동 추출
-        account_no = fetch_primary_account_no(token)
+        # accountNo 및 accountSeq 자동 추출
+        acc_no, acc_seq = fetch_primary_account_info(token)
 
-        cash_balance, positions = get_account_summary(token, account_no)
+        cash_balance, positions, valid_headers = get_account_summary(token, acc_no, acc_seq)
 
         total_stock_eval = 0.0
         stock_details = {}
@@ -211,7 +208,7 @@ def run_dynamic_multi_infinite_buying():
                     print(f"   ⚠️ 예수금(${cash_balance:.2f})이 현재가(${current_price:.2f})보다 부족하여 주문을 제출할 수 없습니다.")
                     continue
                 buy_qty = max(math.floor(one_buy_budget / current_price), 1)
-                place_order(token, account_no, symbol, "BUY", "LIMIT", current_price, buy_qty)
+                place_order(valid_headers, symbol, "BUY", "LIMIT", current_price, buy_qty)
                 continue
 
             total_invested = shares * avg_price
@@ -220,24 +217,24 @@ def run_dynamic_multi_infinite_buying():
             star_percent = max(10.0 - (t_turn * 0.25), 0.0)
             target_sell_price = avg_price * (1 + (star_percent / 100.0))
 
-            place_order(token, account_no, symbol, "SELL", "LIMIT", target_sell_price, shares)
+            place_order(valid_headers, symbol, "SELL", "LIMIT", target_sell_price, shares)
 
             half_budget = one_buy_budget / 2.0
             if t_turn < 20:
                 loc1_price = avg_price
                 loc1_qty = max(math.floor(half_budget / loc1_price), 1 if cash_balance >= loc1_price else 0)
                 if loc1_qty > 0:
-                    place_order(token, account_no, symbol, "BUY", "LIMIT", loc1_price, loc1_qty)
+                    place_order(valid_headers, symbol, "BUY", "LIMIT", loc1_price, loc1_qty)
 
                 loc2_price = avg_price * 1.05
                 loc2_qty = max(math.floor(half_budget / loc2_price), 1 if cash_balance >= loc2_price else 0)
                 if loc2_qty > 0:
-                    place_order(token, account_no, symbol, "BUY", "LIMIT", loc2_price, loc2_qty)
+                    place_order(valid_headers, symbol, "BUY", "LIMIT", loc2_price, loc2_qty)
             else:
                 loc_price = avg_price
                 loc_qty = max(math.floor(one_buy_budget / loc_price), 1 if cash_balance >= loc_price else 0)
                 if loc_qty > 0:
-                    place_order(token, account_no, symbol, "BUY", "LIMIT", loc_price, loc_qty)
+                    place_order(valid_headers, symbol, "BUY", "LIMIT", loc_price, loc_qty)
 
         print("\n🎉 모든 종목의 자동 주문 제출이 완료되었습니다!")
 
