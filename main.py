@@ -391,44 +391,29 @@ def get_current_price(token, symbol):
 # ------------------------------------------------------------
 
 def get_buying_power(token, currency="USD"):
-    url = f"{API_BASE_URL}/api/v1/buying-power"
-
     res = request_with_retry(
         "GET",
-        url,
+        f"{API_BASE_URL}/api/v1/buying-power",
         headers=get_headers(token, account_required=True),
         params={"currency": currency},
     )
 
-    if res.status_code != 200:
-        raise RuntimeError(
-            f"매수 가능 금액 조회 실패 "
-            f"({res.status_code}): {api_error_text(res)}"
-        )
-
     data = safe_json(res)
-    result = result_of(data)
 
-    # 현재 문서 schema가 변경되어도 흔한 이름들을 최대한 대응
-    amount = first_number(
-        result,
-        [
-            "buyingPower",
-            "availableAmount",
-            "availableBuyingPower",
-            "cashBalance",
-            "amount",
-        ],
-        None,
-    )
+    result = data.get("result", {}) if isinstance(data, dict) else {}
+    cash_buying_power = result.get("cashBuyingPower")
 
-    if amount is None:
+    if cash_buying_power is None:
         raise RuntimeError(
             f"buying-power 금액을 찾지 못했습니다: {data}"
         )
 
-    return Decimal(str(amount))
-
+    try:
+        return float(cash_buying_power)
+    except (TypeError, ValueError):
+        raise RuntimeError(
+            f"cashBuyingPower 값이 숫자가 아닙니다: {cash_buying_power}"
+        )
 
 def get_holdings(token):
     url = f"{API_BASE_URL}/api/v1/holdings"
