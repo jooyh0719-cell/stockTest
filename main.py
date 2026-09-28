@@ -4,20 +4,20 @@ import requests
 import yfinance as yf
 
 # ----------------------------------------------------
-# 1. 환경변수 및 Fixie 고정 IP 프록시 설정
+# 1. 환경변수 및 고정 IP 프록시 설정
 # ----------------------------------------------------
 CLIENT_ID = os.environ.get("TOSS_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("TOSS_CLIENT_SECRET")
+ENV_ACCOUNT_NO = os.environ.get("TOSS_ACCOUNT_NO")  # GitHub Secrets 등록된 계좌번호
 FIXIE_URL = os.environ.get("FIXIE_URL")
 
-API_BASE_URL = "https://openapi.tossinvest.com"
+# 토스증권 API Base URL (기본값: 실운영, 실패 시 Sandbox 전환)
+API_BASE_URLS = [
+    "https://openapi.tossinvest.com",          # Production (실운영)
+    "https://open-api.tossinvest.com/sandbox"  # Sandbox (테스트)
+]
 
-proxies = None
-if FIXIE_URL:
-    proxies = {
-        "http": FIXIE_URL,
-        "https": FIXIE_URL
-    }
+proxies = {"http": FIXIE_URL, "https": FIXIE_URL} if FIXIE_URL else None
 
 PORTFOLIO_CONFIG = {
     "SNDL": {"allocation_ratio": 1.00}
@@ -26,14 +26,12 @@ PORTFOLIO_CONFIG = {
 def print_my_ip():
     try:
         ip = requests.get('https://api.ipify.org', proxies=proxies, timeout=5).text
-        print(f"[Check] 토스 API로 접근하는 외부 IP: {ip}")
-        return ip
+        print(f"[Check] 외부 접근 IP: {ip}")
     except Exception as e:
         print(f"❌ IP 조회 실패: {e}")
-        return None
 
-def get_access_token():
-    url = f"{API_BASE_URL}/oauth2/token"
+def get_access_token(base_url):
+    url = f"{base_url}/oauth2/token"
     payload = {
         "grant_type": "client_credentials",
         "client_id": CLIENT_ID,
@@ -43,59 +41,49 @@ def get_access_token():
     if res.status_code == 200:
         return res.json().get("access_token")
     else:
-        raise Exception(f"토큰 발급 실패: {res.text}")
+        raise Exception(f"토큰 발급 실패 ({res.status_code}): {res.text}")
 
-def fetch_primary_account_info(token):
-    """토스 API 계좌 목록에서 accountNo 및 accountSeq 추출"""
-    headers = {
+def get_headers(token, account_no):
+    return {
         "Authorization": f"Bearer {token}",
+        "x-tossinvest-account": str(account_no),
         "Content-Type": "application/json"
     }
-    res = requests.get(f"{API_BASE_URL}/api/v1/accounts", headers=headers, proxies=proxies, timeout=10)
-    
+
+def fetch_valid_account_number(base_url, token):
+    """API 응답 또는 환경변수에서 최우선 계좌번호를 확보합니다."""
+    if ENV_ACCOUNT_NO:
+        print(f"🔑 [환경변수 계좌번호 사용]: {ENV_ACCOUNT_NO}")
+        return ENV_ACCOUNT_NO
+
+    headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+    res = requests.get(f"{base_url}/api/v1/accounts", headers=headers, proxies=proxies, timeout=10)
     if res.status_code == 200:
         data = res.json()
         accounts = data.get("result", []) if isinstance(data, dict) else data
-        if accounts and len(accounts) > 0:
-            first_acc = accounts[0]
-            acc_no = first_acc.get("accountNo")
-            acc_seq = first_acc.get("accountSeq")
-            print(f"✅ [계좌 자동 감지 성공] accountNo: {acc_no} | accountSeq: {acc_seq}")
-            return str(acc_no), str(acc_seq)
-        else:
-            raise Exception("❌ 연동된 토스증권 계좌를 찾을 수 없습니다.")
-    else:
-        raise Exception(f"❌ 계좌 목록 조회 실패: {res.text}")
+        if accounts:
+            acc_no = accounts[0].get("accountNo")
+            print(f"✅ [API 계좌 자동 감지]: {acc_no}")
+            return str(acc_no)
+    raise Exception("계좌번호를 찾을 수 없습니다. TOSS_ACCOUNT_NO 환경변수를 확인하세요.")
 
-def get_headers(token, account_val):
-    return {
-        "Authorization": f"Bearer {token}",
-        "x-tossinvest-account": str(account_val),
-        "Content-Type": "application/json"
-    }
-
-def get_account_summary(token, acc_no, acc_seq):
-    # 1차 시도: accountSeq 사용 (토스 API 표준 규격)
-    headers = get_headers(token, acc_seq)
+def get_account_summary(base_url, token, account_no):
+    headers = get_headers(token, account_no)
     
-    acc_res = requests.get(f"{API_BASE_URL}/api/v1/buying-power", headers=headers, proxies=proxies, timeout=10)
-    
-    # 만약 accountSeq로 실패 시 accountNo로 2차 재시도
-    if acc_res.status_code != 200:
-        print(f"🔄 accountSeq({acc_seq}) 호출 실패. accountNo({acc_no})로 재시도합니다...")
-        headers = get_headers(token, acc_no)
-        acc_res = requests.get(f"{API_BASE_URL}/api/v1/buying-power", headers=headers, proxies=proxies, timeout=10)
-
+    # 1. 예수금 조회 (USD 및 기본 통화 시도)
     cash_balance = 0.0
-    if acc_res.status_code == 200:
-        acc_data = acc_res.json()
-        cash_balance = float(acc_data.get("buyingPower", acc_data.get("cashBalance", acc_data.get("amount", 0.0))))
-        print(f"✅ 예수금 조회 성공: ${cash_balance:,.2f}")
+    for params in [{"currency": "USD"}, {}]:
+        acc_res = requests.get(f"{base_url}/api/v1/buying-power", headers=headers, params=params, proxies=proxies, timeout=10)
+        if acc_res.status_code == 200:
+            acc_data = acc_res.json()
+            cash_balance = float(acc_data.get("buyingPower", acc_data.get("cashBalance", acc_data.get("amount", 0.0))))
+            print(f"✅ 예수금 조회 성공: ${cash_balance:,.2f}")
+            break
     else:
-        print(f"⚠️ 예수금 조회 응답 오류 (상태 {acc_res.status_code}): {acc_res.text}")
+        print(f"⚠️ 예수금 조회 실패: {acc_res.text}")
 
-    # 보유 포지션 조회
-    pos_res = requests.get(f"{API_BASE_URL}/api/v1/holdings", headers=headers, proxies=proxies, timeout=10)
+    # 2. 보유 포지션 조회
+    pos_res = requests.get(f"{base_url}/api/v1/holdings", headers=headers, proxies=proxies, timeout=10)
     positions = {}
     if pos_res.status_code == 200:
         pos_data = pos_res.json()
@@ -108,139 +96,123 @@ def get_account_summary(token, acc_no, acc_seq):
                 positions[sym] = {"shares": qty, "avg_price": avg_p}
         print(f"✅ 포지션 조회 성공: {positions}")
     else:
-        print(f"⚠️ 포지션 조회 응답 오류 (상태 {pos_res.status_code}): {pos_res.text}")
+        print(f"⚠️ 포지션 조회 실패: {pos_res.text}")
 
-    return cash_balance, positions, headers
+    return cash_balance, positions
 
 def get_current_price(symbol):
     try:
         ticker = yf.Ticker(symbol)
         price = ticker.fast_info['lastPrice']
         if price and price > 0:
-            print(f"[Check] {symbol} 현재가 조회 성공(yfinance): ${price:.4f}")
             return float(price)
         return None
     except Exception as e:
-        print(f"❌ {symbol} 주가 조회 예외 발생: {e}")
+        print(f"❌ {symbol} 현재가 조회 실패: {e}")
         return None
 
-def place_order(headers, symbol, side, order_type, price, quantity):
-    valid_order_type = "LIMIT" if order_type == "LOC" else order_type
-    
+def place_order(base_url, token, account_no, symbol, side, order_type, price, quantity):
+    headers = get_headers(token, account_no)
     payload = {
         "symbol": symbol,
         "side": side,
-        "orderType": valid_order_type,
+        "orderType": "LIMIT" if order_type == "LOC" else order_type,
         "price": str(round(price, 2)),
         "quantity": int(quantity)
     }
+    res = requests.post(f"{base_url}/api/v1/orders", headers=headers, json=payload, proxies=proxies, timeout=10)
+    print(f"   Order [{side}] Status {res.status_code}: {res.text}")
+    return res.json() if res.status_code in [200, 201] else None
 
-    res = requests.post(f"{API_BASE_URL}/api/v1/orders", headers=headers, json=payload, proxies=proxies, timeout=10)
-    
-    try:
-        res_data = res.json()
-    except Exception:
-        res_data = res.text
+def run():
+    print("🚀 [동적 예수금 연동 무한매수법] 실행\n")
+    print_my_ip()
 
-    if res.status_code in [200, 201]:
-        print(f"   ✅ 주문 성공 응답: {res_data}")
-    else:
-        print(f"   ❌ 주문 실패 응답 (상태코드 {res.status_code}): {res_data}")
-        
-    return res_data
+    active_base_url = None
+    token = None
+    account_no = None
 
-def run_dynamic_multi_infinite_buying():
-    print("🚀 [동적 예수금 연동 무한매수법] 자동 주문을 시작합니다...\n")
-    try:
-        token = get_access_token()
-        
-        # accountNo 및 accountSeq 자동 추출
-        acc_no, acc_seq = fetch_primary_account_info(token)
-
-        cash_balance, positions, valid_headers = get_account_summary(token, acc_no, acc_seq)
-
-        total_stock_eval = 0.0
-        stock_details = {}
-
-        for symbol in PORTFOLIO_CONFIG.keys():
-            pos = positions.get(symbol, {"shares": 0, "avg_price": 0.0})
-            cur_price = get_current_price(symbol)
+    # URL 후보군 순회 (Prod -> Sandbox)
+    for base_url in API_BASE_URLS:
+        try:
+            print(f"\n🔄 연결 시도중: {base_url}")
+            token = get_access_token(base_url)
+            account_no = fetch_valid_account_number(base_url, token)
             
-            if not cur_price:
-                print(f"⚠️ {symbol} 현재가를 가져오지 못해 주문 처리를 스킵합니다.")
-                continue
-
-            eval_amount = pos["shares"] * cur_price
-            total_stock_eval += eval_amount
-
-            stock_details[symbol] = {
-                "shares": pos["shares"],
-                "avg_price": pos["avg_price"],
-                "current_price": cur_price,
-                "eval_amount": eval_amount
-            }
-
-        total_account_value = cash_balance + total_stock_eval
-        print(f"\n📊 [계좌 자산 현황]")
-        print(f"- 실시간 예수금: ${cash_balance:,.2f}")
-        print(f"- 주식 총 평가액: ${total_stock_eval:,.2f}")
-        print(f"- 계좌 총 자산: ${total_account_value:,.2f}\n")
-        print("=" * 60)
-
-        for symbol, config in PORTFOLIO_CONFIG.items():
-            if symbol not in stock_details:
-                continue
-
-            ratio = config["allocation_ratio"]
-            symbol_capital = total_account_value * ratio
-            one_buy_budget = symbol_capital / 40.0
-
-            info = stock_details[symbol]
-            shares = info["shares"]
-            avg_price = info["avg_price"]
-            current_price = info["current_price"]
-
-            print(f"\n🔹 [{symbol}] 주문 처리 (비율: {int(ratio*100)}% | 할당 예산: ${symbol_capital:,.2f})")
-            print(f"   └ 1회 매수 예산: ${one_buy_budget:.2f} | 현재가: ${current_price:.2f} | 보유: {shares}주 (평단가: ${avg_price:.2f})")
-
-            if shares == 0:
-                if cash_balance < current_price:
-                    print(f"   ⚠️ 예수금(${cash_balance:.2f})이 현재가(${current_price:.2f})보다 부족하여 주문을 제출할 수 없습니다.")
-                    continue
-                buy_qty = max(math.floor(one_buy_budget / current_price), 1)
-                place_order(valid_headers, symbol, "BUY", "LIMIT", current_price, buy_qty)
-                continue
-
-            total_invested = shares * avg_price
-            t_turn = total_invested / one_buy_budget if one_buy_budget > 0 else 0
-
-            star_percent = max(10.0 - (t_turn * 0.25), 0.0)
-            target_sell_price = avg_price * (1 + (star_percent / 100.0))
-
-            place_order(valid_headers, symbol, "SELL", "LIMIT", target_sell_price, shares)
-
-            half_budget = one_buy_budget / 2.0
-            if t_turn < 20:
-                loc1_price = avg_price
-                loc1_qty = max(math.floor(half_budget / loc1_price), 1 if cash_balance >= loc1_price else 0)
-                if loc1_qty > 0:
-                    place_order(valid_headers, symbol, "BUY", "LIMIT", loc1_price, loc1_qty)
-
-                loc2_price = avg_price * 1.05
-                loc2_qty = max(math.floor(half_budget / loc2_price), 1 if cash_balance >= loc2_price else 0)
-                if loc2_qty > 0:
-                    place_order(valid_headers, symbol, "BUY", "LIMIT", loc2_price, loc2_qty)
+            # 예수금 테스트 호출로 계좌 인식 여부 최종 검증
+            headers = get_headers(token, account_no)
+            test_res = requests.get(f"{base_url}/api/v1/buying-power", headers=headers, proxies=proxies, timeout=5)
+            if test_res.status_code == 200:
+                active_base_url = base_url
+                print(f"✅ 접속 및 계좌 인증 성공!: {active_base_url}")
+                break
             else:
-                loc_price = avg_price
-                loc_qty = max(math.floor(one_buy_budget / loc_price), 1 if cash_balance >= loc_price else 0)
-                if loc_qty > 0:
-                    place_order(valid_headers, symbol, "BUY", "LIMIT", loc_price, loc_qty)
+                print(f"⚠️ 계좌 미인식 ({test_res.status_code}): {test_res.text}")
+        except Exception as e:
+            print(f"❌ 실패: {e}")
 
-        print("\n🎉 모든 종목의 자동 주문 제출이 완료되었습니다!")
+    if not active_base_url:
+        print("\n❌ 모든 서버 환경에서 계좌 인증에 실패했습니다.")
+        print("💡 [점검 포인트]")
+        print("1. 토스증권 Open API 센터에서 API Key와 계좌번호가 정확히 연결되어 있는지 확인하세요.")
+        print("2. TOSS_ACCOUNT_NO 환경변수에 하이픈(-)을 제외한 계좌번호 숫자만 등록되어 있는지 확인하세요.")
+        return
 
-    except Exception as e:
-        print(f"\n❌ 오류 발생: {e}")
+    # 정상 접속 완료 후 로직 실행
+    cash_balance, positions = get_account_summary(active_base_url, token, account_no)
+
+    total_stock_eval = 0.0
+    stock_details = {}
+
+    for symbol in PORTFOLIO_CONFIG.keys():
+        pos = positions.get(symbol, {"shares": 0, "avg_price": 0.0})
+        cur_price = get_current_price(symbol)
+        if not cur_price:
+            continue
+        eval_amount = pos["shares"] * cur_price
+        total_stock_eval += eval_amount
+        stock_details[symbol] = {
+            "shares": pos["shares"],
+            "avg_price": pos["avg_price"],
+            "current_price": cur_price,
+            "eval_amount": eval_amount
+        }
+
+    total_account_value = cash_balance + total_stock_eval
+    print(f"\n📊 [자산 현황]")
+    print(f"- 실시간 예수금: ${cash_balance:,.2f}")
+    print(f"- 총 평가 자산: ${total_account_value:,.2f}\n")
+
+    for symbol, config in PORTFOLIO_CONFIG.items():
+        if symbol not in stock_details:
+            continue
+        ratio = config["allocation_ratio"]
+        one_buy_budget = (total_account_value * ratio) / 40.0
+        info = stock_details[symbol]
+        shares, avg_price, current_price = info["shares"], info["avg_price"], info["current_price"]
+
+        if shares == 0:
+            if cash_balance < current_price:
+                print(f"⚠️ 예수금(${cash_balance:.2f}) 부족으로 매수 불가")
+                continue
+            buy_qty = max(math.floor(one_buy_budget / current_price), 1)
+            place_order(active_base_url, token, account_no, symbol, "BUY", "LIMIT", current_price, buy_qty)
+            continue
+
+        # 보유 중일 경우 매도/매수 주문
+        t_turn = (shares * avg_price) / one_buy_budget if one_buy_budget > 0 else 0
+        star_percent = max(10.0 - (t_turn * 0.25), 0.0)
+        target_sell_price = avg_price * (1 + (star_percent / 100.0))
+        place_order(active_base_url, token, account_no, symbol, "SELL", "LIMIT", target_sell_price, shares)
+
+        half_budget = one_buy_budget / 2.0
+        if t_turn < 20:
+            place_order(active_base_url, token, account_no, symbol, "BUY", "LIMIT", avg_price, max(math.floor(half_budget / avg_price), 1))
+            place_order(active_base_url, token, account_no, symbol, "BUY", "LIMIT", avg_price * 1.05, max(math.floor(half_budget / (avg_price * 1.05)), 1))
+        else:
+            place_order(active_base_url, token, account_no, symbol, "BUY", "LIMIT", avg_price, max(math.floor(one_buy_budget / avg_price), 1))
+
+    print("\n🎉 모든 처리가 완료되었습니다.")
 
 if __name__ == "__main__":
-    print_my_ip()
-    run_dynamic_multi_infinite_buying()
+    run()
