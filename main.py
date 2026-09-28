@@ -46,7 +46,7 @@ def get_access_token():
         raise Exception(f"토큰 발급 실패: {res.text}")
 
 def fetch_primary_account_no(token):
-    """토스 API 계좌 목록에서 첫 번째 계좌의 accountNo를 자동으로 가져옵니다."""
+    """토스 API 계좌 목록에서 계좌 식별자(accountNo / accountNumber 등)를 추출합니다."""
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json"
@@ -55,20 +55,30 @@ def fetch_primary_account_no(token):
     
     if res.status_code == 200:
         data = res.json()
+        print(f"📋 [계좌 응답 데이터 구조]: {data}")
+        
         accounts = data.get("result", []) if isinstance(data, dict) else data
         if accounts and len(accounts) > 0:
-            account_no = accounts[0].get("accountNo")
-            print(f"✅ [계좌 자동 감지 성공] 사용할 AccountNo: {account_no}")
-            return account_no
+            first_acc = accounts[0]
+            # 가능한 모든 계좌 식별 키 탐색
+            acc_id = (
+                first_acc.get("accountNo") or 
+                first_acc.get("accountNumber") or 
+                first_acc.get("accountId") or 
+                first_acc.get("accountKey")
+            )
+            print(f"✅ [계좌 자동 감지 성공] 사용할 Account Identifier: {acc_id}")
+            return str(acc_id)
         else:
             raise Exception("❌ 연동된 토스증권 계좌를 찾을 수 없습니다.")
     else:
         raise Exception(f"❌ 계좌 목록 조회 실패: {res.text}")
 
 def get_headers(token, account_no):
+    """토스 API 헤더 생성"""
     return {
         "Authorization": f"Bearer {token}",
-        "x-tossinvest-account": str(account_no),
+        "X-Tossinvest-Account": str(account_no),
         "Content-Type": "application/json"
     }
 
@@ -81,10 +91,10 @@ def get_account_summary(token, account_no):
     
     if acc_res.status_code == 200:
         acc_data = acc_res.json()
-        # API 응답 구조에 맞춰 다양한 키 값 대응
         cash_balance = float(acc_data.get("buyingPower", acc_data.get("cashBalance", acc_data.get("amount", 0.0))))
+        print(f"✅ 예수금 조회 성공: ${cash_balance:,.2f}")
     else:
-        print(f"⚠️ 예수금 조회 응답 오류: {acc_res.text}")
+        print(f"⚠️ 예수금 조회 응답 오류 (상태 {acc_res.status_code}): {acc_res.text}")
 
     # 2. 보유 포지션 조회
     pos_res = requests.get(f"{API_BASE_URL}/api/v1/holdings", headers=headers, proxies=proxies, timeout=10)
@@ -98,8 +108,9 @@ def get_account_summary(token, account_no):
             avg_p = float(item.get("averagePrice", item.get("avgPrice", 0.0)))
             if sym and qty > 0:
                 positions[sym] = {"shares": qty, "avg_price": avg_p}
+        print(f"✅ 포지션 조회 성공: {positions}")
     else:
-        print(f"⚠️ 포지션 조회 응답 오류: {pos_res.text}")
+        print(f"⚠️ 포지션 조회 응답 오류 (상태 {pos_res.status_code}): {pos_res.text}")
 
     return cash_balance, positions
 
@@ -146,7 +157,7 @@ def run_dynamic_multi_infinite_buying():
     try:
         token = get_access_token()
         
-        # 계좌번호 자동 감지 (Secrets 의존성 제거)
+        # 계좌번호 식별자 자동 추출
         account_no = fetch_primary_account_no(token)
 
         cash_balance, positions = get_account_summary(token, account_no)
