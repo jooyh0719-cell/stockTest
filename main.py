@@ -3,12 +3,9 @@ import math
 import requests
 import yfinance as yf
 
-# ----------------------------------------------------
-# 1. 환경변수 및 Fixie 고정 IP 프록시 설정
-# ----------------------------------------------------
 CLIENT_ID = os.environ.get("TOSS_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("TOSS_CLIENT_SECRET")
-ACCOUNT_NO = os.environ.get("TOSS_ACCOUNT_NO")
+ACCOUNT_NO = os.environ.get("TOSS_ACCOUNT_NO", "").strip()
 FIXIE_URL = os.environ.get("FIXIE_URL")
 
 API_BASE_URL = "https://openapi.tossinvest.com"
@@ -46,14 +43,27 @@ def get_access_token():
     else:
         raise Exception(f"토큰 발급 실패: {res.text}")
 
+def check_accounts_list(token):
+    """내 계좌 목록 및 accountSeq 확인용"""
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json"
+    }
+    res = requests.get(f"{API_BASE_URL}/api/v1/accounts", headers=headers, proxies=proxies, timeout=10)
+    print("\n🔍 ===== 계좌 목록 확인 로그 =====")
+    if res.status_code == 200:
+        print(f"✅ [계좌 목록 응답 성공]: {res.json()}")
+    else:
+        print(f"❌ [계좌 목록 응답 실패]: {res.text}")
+    print("===================================\n")
+
 def get_headers(token):
-    """토스 Open API 필수 헤더 설정"""
     if not ACCOUNT_NO:
-        raise ValueError("❌ TOSS_ACCOUNT_NO 환경변수가 설정되지 않았습니다. GitHub Secrets를 확인하세요.")
+        raise ValueError("❌ TOSS_ACCOUNT_NO 환경변수가 설정되지 않았습니다.")
         
     return {
         "Authorization": f"Bearer {token}",
-        "x-tossinvest-account": ACCOUNT_NO.strip(),  # 소문자 헤더 규격 적용
+        "x-tossinvest-account": str(ACCOUNT_NO),
         "Content-Type": "application/json"
     }
 
@@ -100,9 +110,7 @@ def get_current_price(symbol):
         return None
 
 def place_order(token, symbol, side, order_type, price, quantity):
-    """토스증권 API 주문 전송 및 응답 검증"""
     headers = get_headers(token)
-    
     valid_order_type = "LIMIT" if order_type == "LOC" else order_type
     
     payload = {
@@ -131,6 +139,10 @@ def run_dynamic_multi_infinite_buying():
     print("🚀 [동적 예수금 연동 무한매수법] 자동 주문을 시작합니다...\n")
     try:
         token = get_access_token()
+        
+        # 내 accountSeq 값 조회를 위한 계좌 목록 체크
+        check_accounts_list(token)
+
         cash_balance, positions = get_account_summary(token)
 
         total_stock_eval = 0.0
@@ -155,7 +167,7 @@ def run_dynamic_multi_infinite_buying():
             }
 
         total_account_value = cash_balance + total_stock_eval
-        print(f"📊 [계좌 자산 현황]")
+        print(f"\n📊 [계좌 자산 현황]")
         print(f"- 실시간 예수금: ${cash_balance:,.2f}")
         print(f"- 주식 총 평가액: ${total_stock_eval:,.2f}")
         print(f"- 계좌 총 자산: ${total_account_value:,.2f}\n")
