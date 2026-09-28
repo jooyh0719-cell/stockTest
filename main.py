@@ -473,28 +473,25 @@ def get_holdings(token):
 # ------------------------------------------------------------
 # 6. 주문 조회 / 중복 방지
 # ------------------------------------------------------------
-
 def get_orders(token):
     """
-    주문 목록 조회.
-    API의 실제 response가 list/result/items 중 어느 형태여도 최대한 대응.
+    현재 계좌의 주문 목록 조회.
+    우선 파라미터를 최소화하여 API 기본 주문목록을 조회한다.
     """
-    url = f"{API_BASE_URL}/api/v1/orders"
-
     res = request_with_retry(
         "GET",
-        url,
+        f"{API_BASE_URL}/api/v1/orders",
         headers=get_headers(token, account_required=True),
     )
 
-    if res.status_code != 200:
+    data = safe_json(res)
+
+    if res.status_code >= 400:
         raise RuntimeError(
-            f"주문 목록 조회 실패 "
-            f"({res.status_code}): {api_error_text(res)}"
+            f"주문 목록 조회 실패 ({res.status_code}): {api_error_text(data)}"
         )
 
-    return result_of(safe_json(res))
-
+    return data
 
 def is_pending_order(order):
     if not isinstance(order, dict):
