@@ -29,6 +29,6 @@ jobs:
         env:
           TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
           TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
-          TOSS_ACCOUNT_NO: ${{ secrets.TOSS_ACCOUNT_NO }}
+          TOSS_ACCOUNT_SEQ: ${{ secrets.TOSS_ACCOUNT_SEQ }}
           FIXIE_URL: ${{ secrets.FIXIE_URL }}
         run: python main.py
