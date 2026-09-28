@@ -47,46 +47,34 @@ def get_access_token():
         raise Exception(f"토큰 발급 실패: {res.text}")
 
 def get_headers(token):
-    """토스 Open API 요청 시 필수 공통 헤더"""
-    headers = {
+    """토스 Open API 필수 헤더 설정"""
+    if not ACCOUNT_NO:
+        raise ValueError("❌ TOSS_ACCOUNT_NO 환경변수가 설정되지 않았습니다. GitHub Secrets를 확인하세요.")
+        
+    return {
         "Authorization": f"Bearer {token}",
+        "x-tossinvest-account": ACCOUNT_NO.strip(),  # 소문자 헤더 규격 적용
         "Content-Type": "application/json"
     }
-    if ACCOUNT_NO:
-        # 토스증권 계좌 식별자 헤더 (서버 규격에 맞게 계좌 지정)
-        headers["X-Toss-Account-Number"] = ACCOUNT_NO
-        headers["X-Tossinvest-Account"] = ACCOUNT_NO
-    return headers
 
 def get_account_summary(token):
     headers = get_headers(token)
 
-    # 1. 예수금 / 매수 가능 금액 조회 (/api/v1/buying-power 또는 /api/v1/accounts)
+    # 1. 예수금 / 매수 가능 금액 조회
     cash_balance = 0.0
     acc_res = requests.get(f"{API_BASE_URL}/api/v1/buying-power", headers=headers, proxies=proxies, timeout=10)
     
     if acc_res.status_code == 200:
         acc_data = acc_res.json()
-        # API 응답 구조에 따라 구매가능금액/예수금 파싱
         cash_balance = float(acc_data.get("buyingPower", acc_data.get("cashBalance", acc_data.get("amount", 0.0))))
     else:
-        # 백업 경로: /api/v1/accounts 호출 시도
-        acc_res_backup = requests.get(f"{API_BASE_URL}/api/v1/accounts", headers=headers, proxies=proxies, timeout=10)
-        if acc_res_backup.status_code == 200:
-            acc_data = acc_res_backup.json()
-            if isinstance(acc_data, list) and len(acc_data) > 0:
-                cash_balance = float(acc_data[0].get("buyingPower", acc_data[0].get("cashBalance", 0.0)))
-            elif isinstance(acc_data, dict):
-                cash_balance = float(acc_data.get("buyingPower", acc_data.get("cashBalance", 0.0)))
-        else:
-            print(f"⚠️ 예수금 조회 응답 오류: {acc_res.text}")
+        print(f"⚠️ 예수금 조회 응답 오류: {acc_res.text}")
 
-    # 2. 보유 포지션 조회 (/api/v1/holdings)
+    # 2. 보유 포지션 조회
     pos_res = requests.get(f"{API_BASE_URL}/api/v1/holdings", headers=headers, proxies=proxies, timeout=10)
     positions = {}
     if pos_res.status_code == 200:
         pos_data = pos_res.json()
-        # holdings 목록 추출
         items = pos_data if isinstance(pos_data, list) else pos_data.get("holdings", pos_data.get("items", []))
         for item in items:
             sym = item.get("symbol", item.get("ticker"))
@@ -119,13 +107,11 @@ def place_order(token, symbol, side, order_type, price, quantity):
     
     payload = {
         "symbol": symbol,
-        "side": side,  # "BUY" 또는 "SELL"
+        "side": side,
         "orderType": valid_order_type,
         "price": str(round(price, 2)),
         "quantity": int(quantity)
     }
-    if ACCOUNT_NO:
-        payload["accountNo"] = ACCOUNT_NO
 
     res = requests.post(f"{API_BASE_URL}/api/v1/orders", headers=headers, json=payload, proxies=proxies, timeout=10)
     
@@ -191,7 +177,6 @@ def run_dynamic_multi_infinite_buying():
             print(f"\n🔹 [{symbol}] 주문 처리 (비율: {int(ratio*100)}% | 할당 예산: ${symbol_capital:,.2f})")
             print(f"   └ 1회 매수 예산: ${one_buy_budget:.2f} | 현재가: ${current_price:.2f} | 보유: {shares}주 (평단가: ${avg_price:.2f})")
 
-            # 신규 진입시 예수금이 주가보다 작으면 매수 시도 안함
             if shares == 0:
                 if cash_balance < current_price:
                     print(f"   ⚠️ 예수금(${cash_balance:.2f})이 현재가(${current_price:.2f})보다 부족하여 주문을 제출할 수 없습니다.")
