@@ -1,5 +1,4 @@
 import os
-import math
 import time
 import uuid
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
@@ -14,7 +13,6 @@ import requests
 CLIENT_ID = os.environ.get("TOSS_CLIENT_ID")
 CLIENT_SECRET = os.environ.get("TOSS_CLIENT_SECRET")
 
-# 반드시 accountSeq를 사용
 ACCOUNT_SEQ = os.environ.get("TOSS_ACCOUNT_SEQ")
 
 # 기존 환경변수와의 호환
@@ -23,14 +21,20 @@ if not ACCOUNT_SEQ:
 
 FIXIE_URL = os.environ.get("FIXIE_URL")
 
-# false일 때만 LIVE
-DRY_RUN = os.environ.get("DRY_RUN", "true").strip().lower() != "false"
+# DRY_RUN이 "false"일 때만 실제 주문
+DRY_RUN = (
+    os.environ.get("DRY_RUN", "true")
+    .strip()
+    .lower()
+    != "false"
+)
 
 API_BASE_URL = "https://openapi.tossinvest.com"
 
 TOTAL_STEPS = 40
 PRICE_DECIMALS = 2
 TIMEOUT = 10
+
 
 PORTFOLIO_CONFIG = {
     "SNDL": {
@@ -53,13 +57,14 @@ if FIXIE_URL:
 
 
 # ============================================================
-# 3. 공통 HTTP 함수
+# 3. 공통 HTTP / JSON 처리
 # ============================================================
 
 def safe_json(res):
     """
-    requests.Response 또는 이미 파싱된 dict/list 모두 처리.
+    requests.Response 또는 이미 파싱된 dict/list를 모두 처리.
     """
+
     if isinstance(res, (dict, list)):
         return res
 
@@ -73,20 +78,26 @@ def safe_json(res):
 
 def api_error_text(res_or_data):
     """
-    Response 또는 dict/list 모두 안전하게 오류 메시지를 추출.
+    requests.Response / dict / list 모두 처리.
     """
 
     if isinstance(res_or_data, requests.Response):
+
         data = safe_json(res_or_data)
 
         if isinstance(data, dict):
+
             err = data.get("error")
 
             if isinstance(err, dict):
+
                 code = err.get("code", "")
                 message = err.get("message", "")
 
-                result = f"{code}: {message}".strip(": ")
+                result = (
+                    f"{code}: {message}"
+                    .strip(": ")
+                )
 
                 if result:
                     return result
@@ -98,13 +109,18 @@ def api_error_text(res_or_data):
     data = res_or_data
 
     if isinstance(data, dict):
+
         err = data.get("error")
 
         if isinstance(err, dict):
+
             code = err.get("code", "")
             message = err.get("message", "")
 
-            result = f"{code}: {message}".strip(": ")
+            result = (
+                f"{code}: {message}"
+                .strip(": ")
+            )
 
             if result:
                 return result
@@ -115,10 +131,6 @@ def api_error_text(res_or_data):
 
 
 def request_with_retry(method, url, **kwargs):
-    """
-    Toss API 호출.
-    일시적인 429 / 5xx에 대해서만 재시도.
-    """
 
     max_retry = 3
     last_res = None
@@ -126,6 +138,7 @@ def request_with_retry(method, url, **kwargs):
     for attempt in range(max_retry):
 
         try:
+
             res = requests.request(
                 method,
                 url,
@@ -136,6 +149,7 @@ def request_with_retry(method, url, **kwargs):
 
             last_res = res
 
+            # 정상 또는 일반적인 4xx는 바로 반환
             if res.status_code not in (
                 429,
                 500,
@@ -146,6 +160,7 @@ def request_with_retry(method, url, **kwargs):
                 return res
 
             if attempt < max_retry - 1:
+
                 wait_sec = 2 ** attempt
 
                 print(
@@ -184,7 +199,10 @@ def get_headers(token, account_required=False):
     }
 
     if account_required:
-        headers["X-Tossinvest-Account"] = str(ACCOUNT_SEQ)
+
+        headers["X-Tossinvest-Account"] = str(
+            ACCOUNT_SEQ
+        )
 
     return headers
 
@@ -194,23 +212,17 @@ def get_headers(token, account_required=False):
 # ============================================================
 
 def result_of(data):
-    """
-    Toss API의
-        {"result": ...}
-    구조를 벗겨낸다.
-    """
 
-    if isinstance(data, dict) and "result" in data:
+    if (
+        isinstance(data, dict)
+        and "result" in data
+    ):
         return data["result"]
 
     return data
 
 
 def recursive_items(value):
-    """
-    dict/list 내부를 재귀적으로 탐색하면서
-    dict만 반환.
-    """
 
     if isinstance(value, dict):
 
@@ -242,7 +254,11 @@ def to_decimal(value):
 
         return Decimal(text)
 
-    except (InvalidOperation, ValueError, TypeError):
+    except (
+        InvalidOperation,
+        ValueError,
+        TypeError,
+    ):
 
         return None
 
@@ -267,21 +283,29 @@ def normalize_price(price):
 def get_access_token():
 
     if not CLIENT_ID:
-        raise RuntimeError("TOSS_CLIENT_ID가 없습니다.")
+        raise RuntimeError(
+            "TOSS_CLIENT_ID가 없습니다."
+        )
 
     if not CLIENT_SECRET:
-        raise RuntimeError("TOSS_CLIENT_SECRET가 없습니다.")
+        raise RuntimeError(
+            "TOSS_CLIENT_SECRET가 없습니다."
+        )
 
     res = request_with_retry(
         "POST",
         f"{API_BASE_URL}/oauth2/token",
         headers={
-            "Content-Type": "application/x-www-form-urlencoded",
+            "Content-Type":
+                "application/x-www-form-urlencoded",
         },
         data={
-            "grant_type": "client_credentials",
-            "client_id": CLIENT_ID,
-            "client_secret": CLIENT_SECRET,
+            "grant_type":
+                "client_credentials",
+            "client_id":
+                CLIENT_ID,
+            "client_secret":
+                CLIENT_SECRET,
         },
     )
 
@@ -300,10 +324,13 @@ def get_access_token():
     if not token:
 
         raise RuntimeError(
-            f"access_token을 찾지 못했습니다: {data}"
+            f"access_token을 찾지 못했습니다: "
+            f"{data}"
         )
 
-    print("[OK] OAuth access token 발급 성공")
+    print(
+        "[OK] OAuth access token 발급 성공"
+    )
 
     return token
 
@@ -351,13 +378,19 @@ def verify_account_seq(token):
 
     for item in recursive_items(result):
 
-        account_seq = item.get("accountSeq")
+        account_seq = item.get(
+            "accountSeq"
+        )
 
-        if account_seq is not None:
+        if account_seq is None:
+            continue
 
-            if str(account_seq) == str(ACCOUNT_SEQ):
-                found = True
-                break
+        if str(account_seq) == str(
+            ACCOUNT_SEQ
+        ):
+
+            found = True
+            break
 
     if not found:
 
@@ -367,7 +400,8 @@ def verify_account_seq(token):
         )
 
     print(
-        f"[OK] accountSeq 검증 성공: {ACCOUNT_SEQ}"
+        f"[OK] accountSeq 검증 성공: "
+        f"{ACCOUNT_SEQ}"
     )
 
 
@@ -375,7 +409,10 @@ def verify_account_seq(token):
 # 9. Buying Power
 # ============================================================
 
-def get_buying_power(token, currency="USD"):
+def get_buying_power(
+    token,
+    currency="USD",
+):
 
     res = request_with_retry(
         "GET",
@@ -416,7 +453,9 @@ def get_buying_power(token, currency="USD"):
             f"{data}"
         )
 
-    value = to_decimal(cash_buying_power)
+    value = to_decimal(
+        cash_buying_power
+    )
 
     if value is None:
 
@@ -426,8 +465,7 @@ def get_buying_power(token, currency="USD"):
         )
 
     print(
-        f"[OK] USD buying power: "
-        f"{value}"
+        f"[OK] USD buying power: {value}"
     )
 
     return value
@@ -437,7 +475,10 @@ def get_buying_power(token, currency="USD"):
 # 10. 현재가
 # ============================================================
 
-def get_current_price(token, symbol):
+def get_current_price(
+    token,
+    symbol,
+):
 
     res = request_with_retry(
         "GET",
@@ -478,8 +519,10 @@ def get_current_price(token, symbol):
                 item.get("lastPrice")
             )
 
-            if price is not None and price > 0:
-
+            if (
+                price is not None
+                and price > 0
+            ):
                 return price
 
     elif isinstance(data, dict):
@@ -488,8 +531,10 @@ def get_current_price(token, symbol):
             data.get("lastPrice")
         )
 
-        if price is not None and price > 0:
-
+        if (
+            price is not None
+            and price > 0
+        ):
             return price
 
     raise RuntimeError(
@@ -499,7 +544,7 @@ def get_current_price(token, symbol):
 
 
 # ============================================================
-# 11. 보유 종목 조회
+# 11. 보유 종목
 # ============================================================
 
 def get_holdings(token):
@@ -525,10 +570,13 @@ def get_holdings(token):
 
 
 # ============================================================
-# 12. 특정 종목 보유수량 / 평균단가
+# 12. 특정 종목 포지션
 # ============================================================
 
-def get_position(token, symbol):
+def get_position(
+    token,
+    symbol,
+):
 
     data = get_holdings(token)
 
@@ -546,25 +594,34 @@ def get_position(token, symbol):
         if not item_symbol:
             continue
 
-        if str(item_symbol).upper() != symbol:
+        if (
+            str(item_symbol).upper()
+            != symbol
+        ):
             continue
 
-        quantity_raw = (
-            item.get("quantity")
-            if item.get("quantity") is not None
-            else item.get("shares")
+        quantity_raw = item.get(
+            "quantity"
         )
+
+        if quantity_raw is None:
+            quantity_raw = item.get(
+                "shares"
+            )
 
         if quantity_raw is None:
             quantity_raw = item.get(
                 "holdingQuantity"
             )
 
-        avg_price_raw = (
-            item.get("averagePrice")
-            if item.get("averagePrice") is not None
-            else item.get("avgPrice")
+        avg_price_raw = item.get(
+            "averagePrice"
         )
+
+        if avg_price_raw is None:
+            avg_price_raw = item.get(
+                "avgPrice"
+            )
 
         if avg_price_raw is None:
             avg_price_raw = item.get(
@@ -607,6 +664,11 @@ def get_position(token, symbol):
 
 # ============================================================
 # 13. 주문 목록
+#
+# 중요:
+# Toss API에서 status 필드가 필수.
+#
+# OPEN = 진행 중 / 미체결 주문 조회
 # ============================================================
 
 def get_orders(token):
@@ -618,11 +680,11 @@ def get_orders(token):
             token,
             account_required=True,
         ),
+        params={
+            "status": "OPEN",
+        },
     )
 
-    # 중요:
-    # 여기서는 api_error_text(data)가 아니라
-    # api_error_text(res)를 사용해야 한다.
     if res.status_code >= 400:
 
         print(
@@ -641,7 +703,14 @@ def get_orders(token):
             f"{api_error_text(res)}"
         )
 
-    return safe_json(res)
+    data = safe_json(res)
+
+    print(
+        "[DEBUG] orders response:",
+        data,
+    )
+
+    return data
 
 
 # ============================================================
@@ -671,30 +740,16 @@ def get_pending_orders_for_symbol(
         if not item_symbol:
             continue
 
-        if str(item_symbol).upper() != symbol:
+        if (
+            str(item_symbol).upper()
+            != symbol
+        ):
             continue
 
-        status = str(
-            item.get("status")
-            or item.get("orderStatus")
-            or item.get("state")
-            or ""
-        ).upper()
-
-        # 일반적인 미체결 표현
-        pending_statuses = {
-            "PENDING",
-            "OPEN",
-            "NEW",
-            "PARTIALLY_FILLED",
-            "PARTIAL_FILLED",
-            "UNFILLED",
-            "WAITING",
-        }
-
-        if status in pending_statuses:
-
-            pending.append(item)
+        # status=OPEN으로 이미 서버에서
+        # 진행 중 주문만 조회했으므로
+        # 여기서는 종목만 확인.
+        pending.append(item)
 
     print(
         f"[ORDER] {symbol} pending orders: "
@@ -705,7 +760,7 @@ def get_pending_orders_for_symbol(
 
 
 # ============================================================
-# 15. 주문
+# 15. 주문 생성
 # ============================================================
 
 def place_order(
@@ -729,7 +784,10 @@ def place_order(
 
         return None
 
-    if price is None or price <= 0:
+    if (
+        price is None
+        or price <= 0
+    ):
 
         raise RuntimeError(
             f"주문가격이 올바르지 않습니다: "
@@ -830,18 +888,23 @@ def calculate_strategy(
 
     one_buy_budget = (
         total_account_value
-        * Decimal(str(allocation_ratio))
+        * Decimal(
+            str(allocation_ratio)
+        )
         / Decimal(TOTAL_STEPS)
     )
 
     quantity = position["quantity"]
     avg_price = position["avg_price"]
 
-    # --------------------------------------------------------
+    # ========================================================
     # 신규 진입
-    # --------------------------------------------------------
+    # ========================================================
 
-    if quantity <= 0 or avg_price is None:
+    if (
+        quantity <= 0
+        or avg_price is None
+    ):
 
         buy_quantity = int(
             one_buy_budget
@@ -850,25 +913,34 @@ def calculate_strategy(
 
         return {
             "mode": "NEW",
-            "one_buy_budget": one_buy_budget,
-            "buy_quantity": buy_quantity,
-            "buy_price": current_price,
+            "one_buy_budget":
+                one_buy_budget,
+            "buy_quantity":
+                buy_quantity,
+            "buy_price":
+                current_price,
         }
 
-    # --------------------------------------------------------
+    # ========================================================
     # 기존 보유
-    # --------------------------------------------------------
+    # ========================================================
 
-    t_turn = (
-        quantity * avg_price
-        / one_buy_budget
-        if one_buy_budget > 0
-        else Decimal("0")
-    )
+    if one_buy_budget > 0:
+
+        t_turn = (
+            quantity
+            * avg_price
+            / one_buy_budget
+        )
+
+    else:
+
+        t_turn = Decimal("0")
 
     star_percent = max(
         Decimal("10")
-        - t_turn * Decimal("0.25"),
+        - t_turn
+        * Decimal("0.25"),
         Decimal("0"),
     )
 
@@ -876,7 +948,8 @@ def calculate_strategy(
         avg_price
         * (
             Decimal("1")
-            + star_percent / Decimal("100")
+            + star_percent
+            / Decimal("100")
         )
     )
 
@@ -884,9 +957,9 @@ def calculate_strategy(
         target_sell_price
     )
 
-    # --------------------------------------------------------
-    # 매수 가격
-    # --------------------------------------------------------
+    # ========================================================
+    # 매수 전략
+    # ========================================================
 
     if t_turn < Decimal("20"):
 
@@ -901,7 +974,8 @@ def calculate_strategy(
         )
 
         buy_quantity_1 = int(
-            budget_1 / avg_price
+            budget_1
+            / avg_price
         )
 
         buy_quantity_2 = int(
@@ -924,7 +998,8 @@ def calculate_strategy(
     else:
 
         buy_quantity_1 = int(
-            one_buy_budget / avg_price
+            one_buy_budget
+            / avg_price
         )
 
         buy_quantity_2 = 0
@@ -938,30 +1013,40 @@ def calculate_strategy(
     return {
         "mode": "HOLDING",
 
-        "one_buy_budget": one_buy_budget,
+        "one_buy_budget":
+            one_buy_budget,
 
-        "quantity": quantity,
+        "quantity":
+            quantity,
 
-        "avg_price": avg_price,
+        "avg_price":
+            avg_price,
 
-        "t_turn": t_turn,
+        "t_turn":
+            t_turn,
 
-        "star_percent": star_percent,
+        "star_percent":
+            star_percent,
 
-        "target_sell_price": target_sell_price,
+        "target_sell_price":
+            target_sell_price,
 
-        "buy_quantity_1": buy_quantity_1,
+        "buy_quantity_1":
+            buy_quantity_1,
 
-        "buy_price_1": buy_price_1,
+        "buy_price_1":
+            buy_price_1,
 
-        "buy_quantity_2": buy_quantity_2,
+        "buy_quantity_2":
+            buy_quantity_2,
 
-        "buy_price_2": buy_price_2,
+        "buy_price_2":
+            buy_price_2,
     }
 
 
 # ============================================================
-# 17. 메인 전략
+# 17. 종목별 실행
 # ============================================================
 
 def run_symbol(
@@ -970,15 +1055,23 @@ def run_symbol(
     total_account_value,
 ):
 
-    config = PORTFOLIO_CONFIG[symbol]
+    config = PORTFOLIO_CONFIG[
+        symbol
+    ]
 
     allocation_ratio = Decimal(
-        str(config["allocation_ratio"])
+        str(
+            config[
+                "allocation_ratio"
+            ]
+        )
     )
 
     print()
     print("=" * 60)
-    print(f"[SYMBOL] {symbol}")
+    print(
+        f"[SYMBOL] {symbol}"
+    )
     print("=" * 60)
 
     # --------------------------------------------------------
@@ -1005,7 +1098,7 @@ def run_symbol(
     )
 
     # --------------------------------------------------------
-    # 미체결
+    # 미체결 주문
     # --------------------------------------------------------
 
     pending_orders = (
@@ -1019,7 +1112,8 @@ def run_symbol(
 
         print(
             f"[SKIP] {symbol}: "
-            f"미체결 주문이 {len(pending_orders)}개 "
+            f"미체결 주문이 "
+            f"{len(pending_orders)}개 "
             f"있어서 신규 주문을 만들지 않습니다."
         )
 
@@ -1030,10 +1124,14 @@ def run_symbol(
     # --------------------------------------------------------
 
     strategy = calculate_strategy(
-        total_account_value=total_account_value,
-        current_price=current_price,
-        position=position,
-        allocation_ratio=allocation_ratio,
+        total_account_value=
+            total_account_value,
+        current_price=
+            current_price,
+        position=
+            position,
+        allocation_ratio=
+            allocation_ratio,
     )
 
     print()
@@ -1046,8 +1144,13 @@ def run_symbol(
 
     if strategy["mode"] == "NEW":
 
-        buy_quantity = strategy["buy_quantity"]
-        buy_price = strategy["buy_price"]
+        buy_quantity = strategy[
+            "buy_quantity"
+        ]
+
+        buy_price = strategy[
+            "buy_price"
+        ]
 
         print(
             f"[NEW BUY] "
@@ -1076,13 +1179,15 @@ def run_symbol(
         return
 
     # ========================================================
-    # 보유 상태
+    # 기존 보유
     # ========================================================
 
-    quantity = strategy["quantity"]
+    quantity = strategy[
+        "quantity"
+    ]
 
     # --------------------------------------------------------
-    # 매도
+    # 매도 목표
     # --------------------------------------------------------
 
     sell_price = strategy[
@@ -1107,16 +1212,10 @@ def run_symbol(
         )
 
     # --------------------------------------------------------
-    # 매수
+    # LIVE에서는 같은 실행에서
+    # 매도 + 매수를 동시에 넣지 않음
     # --------------------------------------------------------
 
-    # 중요:
-    # 실제 LIVE에서 SELL을 먼저 넣은 뒤 같은 실행에서
-    # BUY까지 넣으면 opposite-pending-order-exists 같은
-    # 오류가 발생할 가능성이 있으므로 현재는
-    # DRY_RUN에서는 전략 전체를 보여주되,
-    # LIVE에서는 매도 주문을 넣은 실행에서 매수까지
-    # 동시에 넣지 않는다.
     if not DRY_RUN:
 
         print(
@@ -1126,7 +1225,9 @@ def run_symbol(
 
         return
 
-    # DRY RUN에서는 계산 결과를 모두 출력
+    # ========================================================
+    # DRY RUN 매수 계산 출력
+    # ========================================================
 
     buy_quantity_1 = strategy[
         "buy_quantity_1"
@@ -1189,7 +1290,9 @@ def run_symbol(
 def main():
 
     print("=" * 60)
-    print("SNDL Toss Securities Auto Trading")
+    print(
+        "SNDL Toss Securities Auto Trading"
+    )
     print("=" * 60)
 
     print(
@@ -1211,16 +1314,19 @@ def main():
     # --------------------------------------------------------
 
     if not CLIENT_ID:
+
         raise RuntimeError(
             "TOSS_CLIENT_ID가 없습니다."
         )
 
     if not CLIENT_SECRET:
+
         raise RuntimeError(
             "TOSS_CLIENT_SECRET가 없습니다."
         )
 
     if not ACCOUNT_SEQ:
+
         raise RuntimeError(
             "TOSS_ACCOUNT_SEQ가 없습니다."
         )
@@ -1232,7 +1338,7 @@ def main():
     token = get_access_token()
 
     # --------------------------------------------------------
-    # accountSeq 검증
+    # Account Seq 검증
     # --------------------------------------------------------
 
     verify_account_seq(token)
@@ -1246,9 +1352,9 @@ def main():
         currency="USD",
     )
 
-    # 현재는 USD buying power를
-    # 전체 전략 기준 금액으로 사용
-    total_account_value = buying_power
+    total_account_value = (
+        buying_power
+    )
 
     print(
         f"[ACCOUNT] "
@@ -1257,7 +1363,7 @@ def main():
     )
 
     # --------------------------------------------------------
-    # 종목별 전략 실행
+    # 종목별 실행
     # --------------------------------------------------------
 
     for symbol in PORTFOLIO_CONFIG:
@@ -1267,7 +1373,8 @@ def main():
             run_symbol(
                 token=token,
                 symbol=symbol,
-                total_account_value=total_account_value,
+                total_account_value=
+                    total_account_value,
             )
 
         except Exception as e:
