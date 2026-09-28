@@ -23,7 +23,7 @@ FIXIE_URL = os.environ.get("FIXIE_URL")
 
 # DRY_RUN이 "false"일 때만 실제 주문
 DRY_RUN = (
-    os.environ.get("DRY_RUN", "true")
+    os.environ.get("DRY_RUN", "false")
     .strip()
     .lower()
     != "false"
