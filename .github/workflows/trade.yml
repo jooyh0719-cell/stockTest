@@ -2,10 +2,16 @@ name: Toss Infinite Buying Bot Trade
 
 on:
   schedule:
-    # 서머타임(3월~11월): UTC 13:30 (한국시간 밤 10:30)
-    # 평시(11월~3월): UTC 14:30 (한국시간 밤 11:30)
-    - cron: '30 13 * * 1-5'
-  workflow_dispatch: # 수동 실행(Run workflow) 버튼 활성화
+    # 한국 주식: 한국시간 09:05
+    - cron: '5 0 * * 1-5'
+
+    # 미국 주식: 서머타임, 한국시간 22:35
+    - cron: '35 13 * * 1-5'
+
+    # 미국 주식: 표준시간, 한국시간 23:35
+    - cron: '35 14 * * 1-5'
+
+  workflow_dispatch:
 
 jobs:
   trade:
