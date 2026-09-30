@@ -31,6 +31,6 @@ jobs:
           TOSS_CLIENT_SECRET: ${{ secrets.TOSS_CLIENT_SECRET }}
           TOSS_ACCOUNT_SEQ: ${{ secrets.TOSS_ACCOUNT_SEQ }}
           FIXIE_URL: ${{ secrets.FIXIE_URL }}
-          TELEGRAM_BOT_TOKEN: ${{ TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ TELEGRAM_CHAT_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py
