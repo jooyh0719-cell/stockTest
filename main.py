@@ -4,7 +4,10 @@ import uuid
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
 
 import requests
-
+import sys
+import io
+import traceback
+from contextlib import redirect_stdout, redirect_stderr
 
 # ============================================================
 # 1. 환경변수 / 기본 설정
@@ -55,7 +58,50 @@ if FIXIE_URL:
         "https": FIXIE_URL,
     }
 
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
+
+def send_telegram(message):
+    """텔레그램 알림 전송. 알림 실패가 매매 로직을 중단시키지 않도록 처리."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("[TELEGRAM] 설정 누락: TELEGRAM_BOT_TOKEN 또는 TELEGRAM_CHAT_ID")
+        return False
+
+    url = (
+        f"https://api.telegram.org/bot"
+        f"{TELEGRAM_BOT_TOKEN}/sendMessage"
+    )
+
+    # 텔레그램 메시지 길이 제한을 고려해 잘라서 전송
+    max_length = 3500
+    if len(message) > max_length:
+        message = "...(앞부분 생략)\n" + message[-max_length:]
+
+    try:
+        response = requests.post(
+            url,
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+            },
+            proxies=proxies,
+            timeout=10,
+        )
+        response.raise_for_status()
+
+        result = response.json()
+        if not result.get("ok"):
+            print("[TELEGRAM] 전송 실패:", result)
+            return False
+
+        print("[TELEGRAM] 알림 전송 성공")
+        return True
+
+    except Exception as exc:
+        # 알림 실패 때문에 매매 결과 처리를 중단하지 않음
+        print(f"[TELEGRAM] 알림 전송 오류: {type(exc).__name__}: {exc}")
+        return False
 # ============================================================
 # 3. 공통 HTTP / JSON 처리
 # ============================================================
@@ -1287,7 +1333,7 @@ def run_symbol(
 # 18. Main
 # ============================================================
 
-def main():
+def run_trading():
 
     print("=" * 60)
     print(
@@ -1389,6 +1435,62 @@ def main():
     print("=" * 60)
     print("실행 완료")
     print("=" * 60)
+
+class LogTee(io.StringIO):
+    """실행 로그를 GitHub Actions와 메모리에 동시에 기록."""
+
+    def __init__(self, original):
+        super().__init__()
+        self.original = original
+
+    def write(self, text):
+        self.original.write(text)
+        self.original.flush()
+        return super().write(text)
+
+    def flush(self):
+        self.original.flush()
+
+
+def main():
+    log_buffer = io.StringIO()
+    stdout_tee = LogTee(sys.stdout)
+    stderr_tee = LogTee(sys.stderr)
+
+    success = False
+
+    try:
+        with redirect_stdout(stdout_tee), redirect_stderr(stderr_tee):
+            try:
+                print("=== SNDL 자동매매 시작 ===")
+                print(f"[CONFIG] DRY_RUN={DRY_RUN}")
+
+                run_trading()
+                success = True
+
+                print("=== SNDL 자동매매 정상 종료 ===")
+
+            except Exception:
+                print("=== SNDL 자동매매 오류 ===")
+                traceback.print_exc()
+
+    finally:
+        # stdout/stderr 양쪽의 로그를 합쳐 알림
+        log_text = stdout_tee.getvalue() + stderr_tee.getvalue()
+
+        status = "정상 종료" if success else "오류 발생"
+        mode = "DRY_RUN (모의 실행)" if DRY_RUN else "LIVE (실주문 모드)"
+
+        message = (
+            f"[SNDL 자동매매] {status}\n"
+            f"모드: {mode}\n\n"
+            f"{log_text[-3500:]}"
+        )
+
+        send_telegram(message)
+
+        stdout_tee.close()
+        stderr_tee.close()
 
 
 # ============================================================
