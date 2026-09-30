@@ -1463,16 +1463,16 @@ def main():
     try:
         with redirect_stdout(stdout_tee), redirect_stderr(stderr_tee):
             try:
-                print("=== SNDL 자동매매 시작 ===")
+                print("=== 자동매매 시작 ===")
                 print(f"[CONFIG] DRY_RUN={DRY_RUN}")
 
                 run_trading()
                 success = True
 
-                print("=== SNDL 자동매매 정상 종료 ===")
+                print("=== 자동매매 정상 종료 ===")
 
             except Exception:
-                print("=== SNDL 자동매매 오류 ===")
+                print("=== 자동매매 오류 ===")
                 traceback.print_exc()
 
     finally:
