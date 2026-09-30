@@ -40,7 +40,8 @@ TIMEOUT = 10
 
 
 PORTFOLIO_CONFIG = {
-    "SNDL": {
+    # "SNDL": {
+    "494310": {
         "allocation_ratio": 1.00,
     }
 }
