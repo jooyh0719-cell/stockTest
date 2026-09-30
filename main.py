@@ -5,6 +5,8 @@ import io
 import time
 import uuid
 import traceback
+from datetime import datetime, time as datetime_time
+from zoneinfo import ZoneInfo
 from decimal import Decimal, ROUND_DOWN, InvalidOperation
 from contextlib import redirect_stdout, redirect_stderr
 
@@ -27,7 +29,7 @@ FIXIE_URL = os.environ.get("FIXIE_URL")
 
 # 기존 동작 유지:
 # DRY_RUN 환경변수가 없거나 "false"이면 LIVE 모드.
-# 실주문 검증 전에는 GitHub Actions에서 DRY_RUN=true로 설정.
+# 실제 주문 검증 전에는 GitHub Actions에서 DRY_RUN=true로 설정.
 DRY_RUN = (
     os.environ.get("DRY_RUN", "false").strip().lower()
     != "false"
@@ -38,14 +40,14 @@ API_BASE_URL = "https://openapi.tossinvest.com"
 TOTAL_STEPS = 40
 TIMEOUT = 10
 
-# 통화별 가격 정밀도
 PRICE_DECIMALS_BY_CURRENCY = {
     "USD": 2,
     "KRW": 0,
 }
 
+
 # ============================================================
-# 종목별 설정
+# 2. 종목별 설정
 #
 # currency:
 #   국내주식 = KRW
@@ -55,7 +57,7 @@ PRICE_DECIMALS_BY_CURRENCY = {
 #   해당 통화의 매수 가능 금액 중 전략에 배분할 비율.
 #
 # 같은 통화를 사용하는 종목들의 allocation_ratio 합은
-# 1.0 이하로 설정한다.
+# 1.0 이하여야 한다.
 # ============================================================
 
 PORTFOLIO_CONFIG = {
@@ -65,15 +67,81 @@ PORTFOLIO_CONFIG = {
     },
 
     # 미국주식을 추가할 때 아래와 같이 등록
+    #
     # "SNDL": {
     #     "currency": "USD",
     #     "allocation_ratio": 1.00,
+    # },
+    #
+    # 국내주식 여러 종목 예시
+    #
+    # "005930": {
+    #     "currency": "KRW",
+    #     "allocation_ratio": 0.50,
+    # },
+    #
+    # 미국주식 여러 종목 예시
+    #
+    # "AAPL": {
+    #     "currency": "USD",
+    #     "allocation_ratio": 0.50,
     # },
 }
 
 
 # ============================================================
-# 2. Proxy / Telegram
+# 3. 시장 시간 판별
+# ============================================================
+
+KST = ZoneInfo("Asia/Seoul")
+NEW_YORK = ZoneInfo("America/New_York")
+
+
+def get_active_market():
+    """
+    현재 시각에 따라 실행할 시장을 결정한다.
+
+    KRW:
+        한국시간 월~금 09:00~15:30
+
+    USD:
+        뉴욕시간 월~금 09:30~09:50
+
+    미국 서머타임 및 표준시간은 ZoneInfo가 자동 반영한다.
+
+    주의:
+        거래소 휴장일은 별도로 확인하지 않는다.
+    """
+
+    now_kst = datetime.now(KST)
+    now_ny = datetime.now(NEW_YORK)
+
+    kst_clock = now_kst.time().replace(tzinfo=None)
+    ny_clock = now_ny.time().replace(tzinfo=None)
+
+    # 한국 주식시장
+    if (
+        now_kst.weekday() < 5
+        and datetime_time(9, 0)
+        <= kst_clock
+        < datetime_time(15, 30)
+    ):
+        return "KRW"
+
+    # 미국 주식시장: 개장 후 20분 이내
+    if (
+        now_ny.weekday() < 5
+        and datetime_time(9, 30)
+        <= ny_clock
+        < datetime_time(9, 50)
+    ):
+        return "USD"
+
+    return None
+
+
+# ============================================================
+# 4. Proxy / Telegram
 # ============================================================
 
 proxies = None
@@ -101,7 +169,6 @@ def send_telegram(message):
         f"{TELEGRAM_BOT_TOKEN}/sendMessage"
     )
 
-    # Telegram 메시지 길이 제한 고려
     if len(message) > 3500:
         message = "...(앞부분 생략)\n" + message[-3500:]
 
@@ -127,7 +194,6 @@ def send_telegram(message):
         return True
 
     except Exception as exc:
-        # 예외 메시지에 토큰이 포함될 가능성을 피한다.
         print(
             f"[TELEGRAM] 전송 오류: "
             f"{type(exc).__name__}"
@@ -136,7 +202,7 @@ def send_telegram(message):
 
 
 # ============================================================
-# 3. 공통 HTTP / JSON
+# 5. 공통 HTTP / JSON
 # ============================================================
 
 def safe_json(res):
@@ -197,10 +263,12 @@ def request_with_retry(method, url, **kwargs):
 
             if attempt < max_retry - 1:
                 wait_sec = 2 ** attempt
+
                 print(
                     f"[RETRY] HTTP {res.status_code}, "
                     f"{wait_sec}초 후 재시도"
                 )
+
                 time.sleep(wait_sec)
 
         except requests.RequestException as exc:
@@ -208,18 +276,20 @@ def request_with_retry(method, url, **kwargs):
                 raise
 
             wait_sec = 2 ** attempt
+
             print(
                 f"[RETRY] 네트워크 오류: "
                 f"{type(exc).__name__}, "
                 f"{wait_sec}초 후 재시도"
             )
+
             time.sleep(wait_sec)
 
     return last_res
 
 
 # ============================================================
-# 4. Header
+# 6. Header
 # ============================================================
 
 def get_headers(token, account_required=False):
@@ -235,7 +305,7 @@ def get_headers(token, account_required=False):
 
 
 # ============================================================
-# 5. 데이터 파싱
+# 7. 데이터 파싱
 # ============================================================
 
 def result_of(data):
@@ -299,7 +369,7 @@ def normalize_price(price, currency):
 
 
 # ============================================================
-# 6. OAuth
+# 8. OAuth
 # ============================================================
 
 def get_access_token():
@@ -337,11 +407,12 @@ def get_access_token():
         )
 
     print("[OK] OAuth access token 발급 성공")
+
     return token
 
 
 # ============================================================
-# 7. 계좌 검증
+# 9. 계좌 검증
 # ============================================================
 
 def get_accounts(token):
@@ -388,7 +459,7 @@ def verify_account_seq(token):
 
 
 # ============================================================
-# 8. 통화별 매수 가능 금액
+# 10. 통화별 매수 가능 금액
 # ============================================================
 
 def get_buying_power(token, currency):
@@ -413,7 +484,12 @@ def get_buying_power(token, currency):
         )
 
     data = safe_json(res)
-    result = data.get("result", {}) if isinstance(data, dict) else {}
+
+    result = (
+        data.get("result", {})
+        if isinstance(data, dict)
+        else {}
+    )
 
     value = to_decimal(result.get("cashBuyingPower"))
 
@@ -428,11 +504,12 @@ def get_buying_power(token, currency):
         )
 
     print(f"[ACCOUNT] {currency} buying power: {value}")
+
     return value
 
 
 # ============================================================
-# 9. 현재가
+# 11. 현재가
 # ============================================================
 
 def get_current_price(token, symbol):
@@ -482,7 +559,7 @@ def get_current_price(token, symbol):
 
 
 # ============================================================
-# 10. 보유 종목 / 포지션
+# 12. 보유 종목 / 포지션
 # ============================================================
 
 def get_holdings(token):
@@ -565,7 +642,7 @@ def get_position(token, symbol):
 
 
 # ============================================================
-# 11. 미체결 주문
+# 13. 미체결 주문
 # ============================================================
 
 def get_orders(token):
@@ -588,7 +665,9 @@ def get_orders(token):
         )
 
     data = safe_json(res)
+
     print("[DEBUG] orders response:", data)
+
     return data
 
 
@@ -617,7 +696,7 @@ def get_pending_orders_for_symbol(token, symbol):
 
 
 # ============================================================
-# 12. 주문
+# 14. 주문
 # ============================================================
 
 def place_order(
@@ -662,8 +741,6 @@ def place_order(
             "payload": payload,
         }
 
-    # 통화는 주문 API에서 종목에 따라 결정될 수 있으므로
-    # 임의의 currency 필드를 payload에 추가하지 않는다.
     res = request_with_retry(
         "POST",
         f"{API_BASE_URL}/api/v1/orders",
@@ -686,13 +763,14 @@ def place_order(
         f"[ORDER OK] {symbol} {side} "
         f"{quantity}주 @ {price} {currency}"
     )
+
     print("[ORDER RESPONSE]", data)
 
     return data
 
 
 # ============================================================
-# 13. 전략 계산
+# 15. 전략 계산
 # ============================================================
 
 def calculate_strategy(
@@ -733,8 +811,10 @@ def calculate_strategy(
     )
 
     target_sell_price = normalize_price(
-        avg_price * (
-            Decimal("1") + star_percent / Decimal("100")
+        avg_price
+        * (
+            Decimal("1")
+            + star_percent / Decimal("100")
         ),
         currency,
     )
@@ -744,21 +824,35 @@ def calculate_strategy(
         budget_2 = one_buy_budget / Decimal("2")
 
         buy_quantity_1 = int(budget_1 / avg_price)
+
         buy_quantity_2 = int(
-            budget_2 / (avg_price * Decimal("1.05"))
+            budget_2 / (
+                avg_price * Decimal("1.05")
+            )
         )
 
-        buy_price_1 = normalize_price(avg_price, currency)
+        buy_price_1 = normalize_price(
+            avg_price,
+            currency,
+        )
+
         buy_price_2 = normalize_price(
             avg_price * Decimal("1.05"),
             currency,
         )
 
     else:
-        buy_quantity_1 = int(one_buy_budget / avg_price)
+        buy_quantity_1 = int(
+            one_buy_budget / avg_price
+        )
+
         buy_quantity_2 = 0
 
-        buy_price_1 = normalize_price(avg_price, currency)
+        buy_price_1 = normalize_price(
+            avg_price,
+            currency,
+        )
+
         buy_price_2 = None
 
     return {
@@ -778,7 +872,7 @@ def calculate_strategy(
 
 
 # ============================================================
-# 14. 종목별 실행
+# 16. 종목별 실행
 # ============================================================
 
 def run_symbol(
@@ -830,6 +924,7 @@ def run_symbol(
     print("[STRATEGY]")
     print(strategy)
 
+    # 신규 포지션
     if strategy["mode"] == "NEW":
         buy_quantity = strategy["buy_quantity"]
         buy_price = strategy["buy_price"]
@@ -856,6 +951,7 @@ def run_symbol(
 
         return
 
+    # 보유 포지션 매도
     quantity = strategy["quantity"]
     sell_price = strategy["target_sell_price"]
 
@@ -874,6 +970,7 @@ def run_symbol(
             price=sell_price,
         )
 
+    # 실주문에서는 매도 주문 후 추가 매수 생략
     if not DRY_RUN:
         print(
             "[LIVE] 매도 주문 제출 후 "
@@ -881,7 +978,7 @@ def run_symbol(
         )
         return
 
-    # DRY_RUN에서는 기존 매수 전략도 계산해 출력
+    # DRY_RUN: 매수 전략도 계산하여 출력
     buy_quantity_1 = strategy["buy_quantity_1"]
     buy_price_1 = strategy["buy_price_1"]
 
@@ -920,7 +1017,7 @@ def run_symbol(
 
 
 # ============================================================
-# 15. 메인 매매 실행
+# 17. 메인 매매 실행
 # ============================================================
 
 def run_trading():
@@ -935,6 +1032,33 @@ def run_trading():
         f"{'사용' if FIXIE_URL else '미사용'}"
     )
 
+    # 현재 시각 표시
+    now_kst = datetime.now(KST)
+    now_ny = datetime.now(NEW_YORK)
+
+    print(
+        f"[TIME] 한국시간: "
+        f"{now_kst:%Y-%m-%d %H:%M:%S %Z}"
+    )
+
+    print(
+        f"[TIME] 뉴욕시간: "
+        f"{now_ny:%Y-%m-%d %H:%M:%S %Z}"
+    )
+
+    # 시장 판별
+    active_market = get_active_market()
+
+    if active_market is None:
+        print(
+            "[SKIP] 현재 자동매매 실행 시간이 아닙니다. "
+            "토스 API 조회 및 주문을 진행하지 않습니다."
+        )
+        return
+
+    print(f"[MARKET] 이번 실행 시장: {active_market}")
+
+    # 필수 환경변수 확인
     if not CLIENT_ID:
         raise RuntimeError("TOSS_CLIENT_ID가 없습니다.")
 
@@ -951,23 +1075,34 @@ def run_trading():
     allocation_by_currency = {}
 
     for symbol, config in PORTFOLIO_CONFIG.items():
-        currency = str(config.get("currency", "")).upper()
-        ratio = to_decimal(config.get("allocation_ratio"))
+        currency = str(
+            config.get("currency", "")
+        ).upper()
+
+        ratio = to_decimal(
+            config.get("allocation_ratio")
+        )
 
         if currency not in PRICE_DECIMALS_BY_CURRENCY:
             raise RuntimeError(
                 f"{symbol}: 지원하지 않는 통화 {currency}"
             )
 
-        if ratio is None or ratio < 0 or ratio > 1:
+        if (
+            ratio is None
+            or ratio < 0
+            or ratio > 1
+        ):
             raise RuntimeError(
                 f"{symbol}: allocation_ratio는 0~1이어야 합니다."
             )
 
         allocation_by_currency[currency] = (
             allocation_by_currency.get(
-                currency, Decimal("0")
-            ) + ratio
+                currency,
+                Decimal("0"),
+            )
+            + ratio
         )
 
     for currency, ratio_sum in allocation_by_currency.items():
@@ -977,42 +1112,61 @@ def run_trading():
                 f"1.0을 초과합니다: {ratio_sum}"
             )
 
+    # 이번 시장 통화에 해당하는 종목만 선택
+    active_symbols = {
+        symbol: config
+        for symbol, config in PORTFOLIO_CONFIG.items()
+        if str(config.get("currency", "")).upper()
+        == active_market
+    }
+
+    if not active_symbols:
+        print(
+            f"[SKIP] 설정된 종목 중 {active_market} 종목이 없습니다."
+        )
+        return
+
+    print(
+        "[CONFIG] 이번 실행 대상: "
+        + ", ".join(active_symbols.keys())
+    )
+
+    # OAuth 및 계좌 검증
     token = get_access_token()
     verify_account_seq(token)
 
-    # 각 통화별 매수 가능 금액은 한 번씩 조회
-    buying_power_by_currency = {}
+    # 이번 시장 통화의 매수 가능 금액만 조회
+    buying_power = get_buying_power(
+        token,
+        active_market,
+    )
 
-    for currency in sorted(allocation_by_currency):
-        buying_power_by_currency[currency] = (
-            get_buying_power(token, currency)
-        )
-
-    # 종목별 실행
-    for symbol, config in PORTFOLIO_CONFIG.items():
-        currency = config["currency"].upper()
-        total_account_value = buying_power_by_currency[currency]
+    # 해당 시장의 종목만 실행
+    for symbol, config in active_symbols.items():
+        currency = str(
+            config["currency"]
+        ).upper()
 
         print(
             f"[ACCOUNT] {symbol} 전략 기준금액 = "
-            f"{total_account_value} {currency}"
+            f"{buying_power} {currency}"
         )
 
         run_symbol(
             token=token,
             symbol=symbol,
             currency=currency,
-            total_account_value=total_account_value,
+            total_account_value=buying_power,
         )
 
     print()
     print("=" * 60)
-    print("실행 완료")
+    print(f"{active_market} 시장 실행 완료")
     print("=" * 60)
 
 
 # ============================================================
-# 16. 로그 수집 및 텔레그램 알림
+# 18. 로그 수집 및 텔레그램 알림
 # ============================================================
 
 class LogTee(io.StringIO):
