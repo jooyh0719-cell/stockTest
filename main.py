@@ -291,9 +291,12 @@ def get_buying_power(token):
         params={"currency": "USD"},
     )
 
+    # 토스 API 응답 필드 대응 (cashBuyingPower 추가)
     value = first_value(
         data,
         [
+            "cashBuyingPower",
+            "cash_buying_power",
             "buyingPower",
             "buying_power",
             "availableAmount",
@@ -340,6 +343,7 @@ def get_bulz_holding(token):
             item.get("quantity")
             or item.get("holdingQuantity")
             or item.get("holding_quantity")
+            or item.get("balanceQuantity")
             or item.get("qty")
             or 0
         )
@@ -350,6 +354,7 @@ def get_bulz_holding(token):
             or item.get("avgPrice")
             or item.get("avg_price")
             or item.get("purchaseAveragePrice")
+            or item.get("evaluatedPrice")
             or 0
         )
 
@@ -582,7 +587,7 @@ def calculate_orders(price, holding, capital):
     if one_buy_budget <= 0:
         raise RuntimeError("1회 매수 예산이 0 이하입니다.")
 
-    # 주의: 원전의 누적 체결액 대신 현재 보유 원가로 계산하는 추정 T
+    # 원전의 누적 체결액 대신 현재 보유 원가로 계산하는 추정 T
     if quantity > 0:
         t_value = ceil_decimal(
             Decimal(quantity) * avg_price / one_buy_budget,
