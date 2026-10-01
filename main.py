@@ -61,10 +61,15 @@ PRICE_DECIMALS_BY_CURRENCY = {
 # ============================================================
 
 PORTFOLIO_CONFIG = {
-    "494310": {
-        "currency": "KRW",
+    "BULZ": {
+        "currency": "USD",
         "allocation_ratio": 1.00,
     },
+
+    # "494310": { # KODEX 반도체레버리지
+    #     "currency": "KRW",
+    #     "allocation_ratio": 1.00,
+    # },
 
     # 미국주식을 추가할 때 아래와 같이 등록
     #
