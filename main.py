@@ -291,7 +291,6 @@ def get_buying_power(token):
         params={"currency": "USD"},
     )
 
-    # 토스 API 응답 필드 대응 (cashBuyingPower 추가)
     value = first_value(
         data,
         [
@@ -522,8 +521,11 @@ def place_order(token, side, quantity, price, loc=False, reason=""):
         log(f"잘못된 주문이므로 생략: {side}, {quantity}, {price}")
         return None
 
+    # clientOrderId 자릿수 제한(Rule: Size) 대응을 위해 UUID 길이를 16자로 제한
+    order_id_short = uuid.uuid4().hex[:16]
+
     payload = {
-        "clientOrderId": f"bulz-{uuid.uuid4().hex}",
+        "clientOrderId": f"bulz-{order_id_short}",
         "symbol": SYMBOL,
         "side": side,
         "orderType": "LIMIT",
@@ -587,7 +589,6 @@ def calculate_orders(price, holding, capital):
     if one_buy_budget <= 0:
         raise RuntimeError("1회 매수 예산이 0 이하입니다.")
 
-    # 원전의 누적 체결액 대신 현재 보유 원가로 계산하는 추정 T
     if quantity > 0:
         t_value = ceil_decimal(
             Decimal(quantity) * avg_price / one_buy_budget,
@@ -701,7 +702,6 @@ def main():
         f"평균단가=${holding['avg_price']}"
     )
 
-    # 기존 미체결 주문이 있으면 추가 주문을 막는다.
     open_orders = get_open_orders(token)
 
     if open_orders:
@@ -726,7 +726,6 @@ def main():
     log(f"별값 가격=${money(plan['star_price'])}")
     log("-" * 50)
 
-    # 매도 주문부터 제출
     for order in plan["sell_orders"]:
         place_order(
             token,
@@ -737,7 +736,6 @@ def main():
             reason=order["reason"],
         )
 
-    # 매수 주문 제출
     for order in plan["buy_orders"]:
         estimated_cost = (
             Decimal(order["quantity"]) * dec(order["price"])
