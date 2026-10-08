@@ -10,8 +10,7 @@ from datetime import datetime
 
 
 # ============================================================
-# BULZ - 라오어 무한매수법 V2.2 테스트 구현
-# 실제 주문 전송 / DRY_RUN 없음
+# 설정 및 환경변수
 # ============================================================
 
 CLIENT_ID = os.getenv("TOSS_CLIENT_ID", "")
@@ -20,18 +19,21 @@ ACCOUNT_SEQ = os.getenv("TOSS_ACCOUNT_SEQ", "")
 FIXIE_URL = os.getenv("FIXIE_URL", "")
 
 API_BASE_URL = "https://openapi.tossinvest.com"
-SYMBOL = "BULZ"
+
+# 콤마(,)로 구분된 종목 목록 받기 (기본값: BULZ,SOXL)
+SYMBOLS_ENV = os.getenv("SYMBOLS", "BULZ,IONQ")
+SYMBOLS = [s.strip().upper() for s in SYMBOLS_ENV.split(",") if s.strip()]
+
 TOTAL_STEPS = 40
 TIMEOUT = 20
 
-STRATEGY_CAPITAL_USD = os.getenv("STRATEGY_CAPITAL_USD", "")
+# 전략 원금: 쉼표로 종목별 원금 지정 가능 (예: "1000,2000") 또는 단일값 지정 시 공통 적용
+STRATEGY_CAPITAL_USD_ENV = os.getenv("STRATEGY_CAPITAL_USD", "")
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "")
 GITHUB_REF_NAME = os.getenv("GITHUB_REF_NAME", "main")
-GITHUB_STATE_PATH = os.getenv(
-    "GITHUB_STATE_PATH", "strategy_state.json"
-)
+GITHUB_STATE_PATH = os.getenv("GITHUB_STATE_PATH", "strategy_state.json")
 
 STATE_FILE = Path("strategy_state.json")
 
@@ -64,8 +66,7 @@ def notify(message):
 
     try:
         SESSION.post(
-            f"https://api.telegram.org/bot"
-            f"{TELEGRAM_BOT_TOKEN}/sendMessage",
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={
                 "chat_id": TELEGRAM_CHAT_ID,
                 "text": message,
@@ -151,7 +152,6 @@ def api_request(
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    # 중요: 토스 계좌 헤더
     if ACCOUNT_SEQ:
         headers["x-tossinvest-account"] = str(ACCOUNT_SEQ)
 
@@ -164,10 +164,7 @@ def api_request(
         timeout=TIMEOUT,
     )
 
-    log(
-        f"API {method} {path} "
-        f"status={response.status_code}"
-    )
+    log(f"API {method} {path} status={response.status_code}")
 
     if not response.ok:
         log(f"API 오류 응답: {response.text[:2000]}")
@@ -185,9 +182,7 @@ def api_request(
 
 def get_token():
     if not CLIENT_ID or not CLIENT_SECRET:
-        raise RuntimeError(
-            "TOSS_CLIENT_ID 또는 TOSS_CLIENT_SECRET이 없습니다."
-        )
+        raise RuntimeError("TOSS_CLIENT_ID 또는 TOSS_CLIENT_SECRET이 없습니다.")
 
     response = SESSION.post(
         f"{API_BASE_URL}/oauth2/token",
@@ -221,12 +216,7 @@ def verify_account(token):
     if not ACCOUNT_SEQ:
         raise RuntimeError("TOSS_ACCOUNT_SEQ가 설정되지 않았습니다.")
 
-    data = api_request(
-        "GET",
-        "/api/v1/accounts",
-        token=token,
-    )
-
+    data = api_request("GET", "/api/v1/accounts", token=token)
     log("계좌 조회 성공")
 
     accounts = data.get("result", [])
@@ -239,23 +229,21 @@ def verify_account(token):
         )
 
         if not matched:
-            raise RuntimeError(
-                "TOSS_ACCOUNT_SEQ가 계좌 조회 결과와 일치하지 않습니다."
-            )
+            raise RuntimeError("TOSS_ACCOUNT_SEQ가 계좌 조회 결과와 일치하지 않습니다.")
 
     return data
 
 
 # ============================================================
-# 시세 및 계좌 데이터
+# 시세 및 계좌 데이터 (파라미터로 symbol 처리)
 # ============================================================
 
-def get_price(token):
+def get_price(token, symbol):
     data = api_request(
         "GET",
         "/api/v1/prices",
         token=token,
-        params={"symbols": SYMBOL},
+        params={"symbols": symbol},
     )
 
     value = first_value(
@@ -275,11 +263,11 @@ def get_price(token):
 
     if price <= 0:
         raise RuntimeError(
-            "현재가를 찾을 수 없습니다: "
+            f"[{symbol}] 현재가를 찾을 수 없습니다: "
             + json.dumps(data, ensure_ascii=False)[:1500]
         )
 
-    log(f"{SYMBOL} 현재가: ${price}")
+    log(f"{symbol} 현재가: ${price}")
     return price
 
 
@@ -321,21 +309,17 @@ def get_buying_power(token):
     return amount
 
 
-def get_bulz_holding(token):
-    data = api_request(
-        "GET",
-        "/api/v1/holdings",
-        token=token,
-    )
+def get_holding(token, symbol):
+    data = api_request("GET", "/api/v1/holdings", token=token)
 
     for item in recursive_dicts(data):
-        symbol = (
+        item_symbol = (
             item.get("symbol")
             or item.get("ticker")
             or item.get("stockCode")
         )
 
-        if str(symbol).upper() != SYMBOL:
+        if str(item_symbol).upper() != symbol.upper():
             continue
 
         quantity_value = (
@@ -368,7 +352,7 @@ def get_bulz_holding(token):
     }
 
 
-def get_open_orders(token):
+def get_open_orders(token, symbol):
     data = api_request(
         "GET",
         "/api/v1/orders",
@@ -379,7 +363,7 @@ def get_open_orders(token):
     orders = []
 
     for item in recursive_dicts(data):
-        symbol = (
+        item_symbol = (
             item.get("symbol")
             or item.get("ticker")
             or item.get("stockCode")
@@ -391,14 +375,14 @@ def get_open_orders(token):
             or item.get("id")
         )
 
-        if str(symbol).upper() == SYMBOL and order_id:
+        if str(item_symbol).upper() == symbol.upper() and order_id:
             orders.append(item)
 
     return orders
 
 
 # ============================================================
-# 상태 파일: GitHub Actions 또는 로컬
+# 상태 파일 관리
 # ============================================================
 
 def github_state_url():
@@ -430,10 +414,7 @@ def load_state():
 
         if response.status_code == 200:
             file_data = response.json()
-            raw = base64.b64decode(
-                file_data["content"]
-            ).decode("utf-8")
-
+            raw = base64.b64decode(file_data["content"]).decode("utf-8")
             log("GitHub 상태 파일 로드 완료")
             return json.loads(raw)
 
@@ -452,18 +433,12 @@ def load_state():
 
 
 def save_state(state):
-    content = json.dumps(
-        state,
-        ensure_ascii=False,
-        indent=2,
-    )
-
+    content = json.dumps(state, ensure_ascii=False, indent=2)
     url = github_state_url()
 
     if not url:
         with STATE_FILE.open("w", encoding="utf-8") as file:
             file.write(content)
-
         log("로컬 상태 파일 저장 완료")
         return
 
@@ -481,16 +456,13 @@ def save_state(state):
     )
 
     payload = {
-        "message": "Update BULZ strategy state",
-        "content": base64.b64encode(
-            content.encode("utf-8")
-        ).decode("utf-8"),
+        "message": "Update multi-symbol strategy state",
+        "content": base64.b64encode(content.encode("utf-8")).decode("utf-8"),
         "branch": GITHUB_REF_NAME,
     }
 
     if response.status_code == 200:
         payload["sha"] = response.json()["sha"]
-
     elif response.status_code != 404:
         log(f"GitHub 상태 확인 오류: {response.text[:1000]}")
         response.raise_for_status()
@@ -510,23 +482,22 @@ def save_state(state):
 
 
 # ============================================================
-# 주문
+# 주문 전송
 # ============================================================
 
-def place_order(token, side, quantity, price, loc=False, reason=""):
+def place_order(token, symbol, side, quantity, price, loc=False, reason=""):
     quantity = int(quantity)
     price = money(price)
 
     if quantity <= 0 or price <= 0:
-        log(f"잘못된 주문이므로 생략: {side}, {quantity}, {price}")
+        log(f"잘못된 주문이므로 생략: {symbol} {side}, {quantity}, {price}")
         return None
 
-    # clientOrderId 자릿수 제한(Rule: Size) 대응을 위해 UUID 길이를 16자로 제한
     order_id_short = uuid.uuid4().hex[:16]
 
     payload = {
-        "clientOrderId": f"bulz-{order_id_short}",
-        "symbol": SYMBOL,
+        "clientOrderId": f"{symbol.lower()}-{order_id_short}",
+        "symbol": symbol,
         "side": side,
         "orderType": "LIMIT",
         "quantity": str(quantity),
@@ -535,7 +506,7 @@ def place_order(token, side, quantity, price, loc=False, reason=""):
     }
 
     log(
-        f"실제 주문 전송: {side} {quantity}주 "
+        f"실제 주문 전송 [{symbol}]: {side} {quantity}주 "
         f"@ ${price}; LOC={loc}; {reason}"
     )
 
@@ -546,7 +517,7 @@ def place_order(token, side, quantity, price, loc=False, reason=""):
         payload=payload,
     )
 
-    log("주문 응답: " + json.dumps(result, ensure_ascii=False)[:2000])
+    log(f"[{symbol}] 주문 응답: " + json.dumps(result, ensure_ascii=False)[:2000])
     return result
 
 
@@ -554,25 +525,36 @@ def place_order(token, side, quantity, price, loc=False, reason=""):
 # 전략 계산
 # ============================================================
 
-def get_strategy_capital(state, buying_power):
-    configured = dec(STRATEGY_CAPITAL_USD)
+def get_symbol_capital(symbol, symbol_index, state_symbol, buying_power):
+    """
+    종목별 원금 산정 로직:
+    1. 환경변수 STRATEGY_CAPITAL_USD가 콤마 구분("1000,2000")이면 순서대로 매핑
+    2. 단일값이면 동일하게 적용
+    3. 지정된 바가 없으면 이전 state 설정값 사용
+    4. 모두 없으면 현재 매수 가능 금액을 할당
+    """
+    configured_parts = [p.strip() for p in STRATEGY_CAPITAL_USD_ENV.split(",") if p.strip()]
 
-    if configured > 0:
-        capital = configured
+    capital = Decimal("0")
 
-    elif dec(state.get("strategy_capital_usd")) > 0:
-        capital = dec(state["strategy_capital_usd"])
+    if configured_parts:
+        if symbol_index < len(configured_parts):
+            capital = dec(configured_parts[symbol_index])
+        else:
+            capital = dec(configured_parts[0])
 
-    else:
-        capital = buying_power
-        state["strategy_capital_usd"] = str(capital)
-        log(f"최초 전략 원금 설정: ${capital}")
+    if capital <= 0 and dec(state_symbol.get("strategy_capital_usd")) > 0:
+        capital = dec(state_symbol["strategy_capital_usd"])
 
     if capital <= 0:
-        raise RuntimeError(
-            "전략 원금이 0 이하입니다. "
-            "STRATEGY_CAPITAL_USD를 설정하세요."
-        )
+        # 매수가능 금액 할당 (종목수 대비 나눔 등 원하시는 비율로 조정 가능)
+        capital = buying_power
+        log(f"[{symbol}] 최초 전략 원금 자동 설정: ${capital}")
+
+    state_symbol["strategy_capital_usd"] = str(capital)
+
+    if capital <= 0:
+        raise RuntimeError(f"[{symbol}] 전략 원금이 0 이하입니다. STRATEGY_CAPITAL_USD를 설정하세요.")
 
     return capital
 
@@ -682,104 +664,111 @@ def calculate_orders(price, holding, capital):
 
 
 # ============================================================
-# 메인
+# 메인 루프
 # ============================================================
 
 def main():
-    notify("BULZ V2.2 실행 시작 - 실제 주문 모드")
+    notify(f"무한매수법 V2.2 멀티 종목 실행 시작 ({', '.join(SYMBOLS)})")
 
     state = load_state()
     token = get_token()
 
     verify_account(token)
 
-    price = get_price(token)
+    # 매수 가능 예수금은 전체 공통 공유
     buying_power = get_buying_power(token)
-    holding = get_bulz_holding(token)
 
-    log(
-        f"보유 수량={holding['quantity']}, "
-        f"평균단가=${holding['avg_price']}"
-    )
+    # 종목별 상태 저장용 dict 초기화 체크
+    if "symbols" not in state:
+        state["symbols"] = {}
 
-    open_orders = get_open_orders(token)
+    summary_messages = []
 
-    if open_orders:
-        log(
-            f"BULZ 미체결 주문 {len(open_orders)}건 발견. "
-            "중복 주문 방지를 위해 이번 실행을 중단합니다."
-        )
-        log(json.dumps(open_orders, ensure_ascii=False)[:2000])
-        return
+    for index, symbol in enumerate(SYMBOLS):
+        log("=" * 60)
+        log(f"[{symbol}] 전략 처리 개시")
 
-    capital = get_strategy_capital(state, buying_power)
+        if symbol not in state["symbols"]:
+            state["symbols"][symbol] = {}
 
-    plan = calculate_orders(price, holding, capital)
+        sym_state = state["symbols"][symbol]
 
-    log("-" * 50)
-    log(f"전략 원금=${capital}")
-    log(f"1회 매수 예산=${plan['one_buy_budget']:.2f}")
-    log(f"현재가=${price}")
-    log(f"평균단가=${plan['avg_price']}")
-    log(f"T 추정값={plan['T']}")
-    log(f"별값 비율={plan['star_percent']}%")
-    log(f"별값 가격=${money(plan['star_price'])}")
-    log("-" * 50)
+        price = get_price(token, symbol)
+        holding = get_holding(token, symbol)
 
-    for order in plan["sell_orders"]:
-        place_order(
-            token,
-            "SELL",
-            order["quantity"],
-            order["price"],
-            loc=order["loc"],
-            reason=order["reason"],
-        )
+        log(f"[{symbol}] 보유 수량={holding['quantity']}, 평균단가=${holding['avg_price']}")
 
-    for order in plan["buy_orders"]:
-        estimated_cost = (
-            Decimal(order["quantity"]) * dec(order["price"])
-        )
+        open_orders = get_open_orders(token, symbol)
 
-        if estimated_cost > buying_power:
-            log(
-                f"매수 생략: 예상 금액 ${estimated_cost:.2f}, "
-                f"매수 가능 금액 ${buying_power:.2f}"
-            )
+        if open_orders:
+            log(f"[{symbol}] 미체결 주문 {len(open_orders)}건 발견. 스킵합니다.")
+            summary_messages.append(f"[{symbol}] 미체결 주문 존재로 스킵됨")
             continue
 
-        place_order(
-            token,
-            "BUY",
-            order["quantity"],
-            order["price"],
-            loc=order["loc"],
-            reason=order["reason"],
+        capital = get_symbol_capital(symbol, index, sym_state, buying_power)
+        plan = calculate_orders(price, holding, capital)
+
+        log(f"[{symbol}] 전략 원금=${capital}")
+        log(f"[{symbol}] 1회 매수 예산=${plan['one_buy_budget']:.2f}")
+        log(f"[{symbol}] T 추정값={plan['T']}, 별값=${money(plan['star_price'])}")
+
+        # 1. 매도 주문
+        for order in plan["sell_orders"]:
+            place_order(
+                token,
+                symbol,
+                "SELL",
+                order["quantity"],
+                order["price"],
+                loc=order["loc"],
+                reason=order["reason"],
+            )
+
+        # 2. 매수 주문
+        for order in plan["buy_orders"]:
+            estimated_cost = Decimal(order["quantity"]) * dec(order["price"])
+
+            if estimated_cost > buying_power:
+                log(
+                    f"[{symbol}] 매수 생략: 필요 금액 ${estimated_cost:.2f} > "
+                    f"잔여 매수 가능 금액 ${buying_power:.2f}"
+                )
+                continue
+
+            place_order(
+                token,
+                symbol,
+                "BUY",
+                order["quantity"],
+                order["price"],
+                loc=order["loc"],
+                reason=order["reason"],
+            )
+
+            buying_power -= estimated_cost
+
+        # 종목별 State 업데이트
+        sym_state["last_run_at"] = datetime.now().isoformat()
+        sym_state["last_price"] = str(price)
+        sym_state["last_T_estimated"] = str(plan["T"])
+        sym_state["last_star_price"] = str(money(plan["star_price"]))
+
+        summary_messages.append(
+            f"[{symbol}] 현재가:${price} | T:{plan['T']} | 별값:${money(plan['star_price'])}"
         )
 
-        buying_power -= estimated_cost
-
-    state["last_run_at"] = datetime.now().isoformat()
-    state["last_price"] = str(price)
-    state["last_T_estimated"] = str(plan["T"])
-    state["last_star_price"] = str(money(plan["star_price"]))
-
+    # 전체 상태 파일 저장
+    state["last_updated"] = datetime.now().isoformat()
     save_state(state)
 
-    notify(
-        f"BULZ 전략 계산 완료\n"
-        f"현재가=${price}\n"
-        f"보유 수량={holding['quantity']}\n"
-        f"T 추정값={plan['T']}\n"
-        f"별값=${money(plan['star_price'])}"
-    )
+    # 통합 메시지 알림
+    notify_text = "무한매수법 V2.2 계산 완료\n" + "\n".join(summary_messages)
+    notify(notify_text)
 
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as exc:
-        notify(
-            f"실행 오류: {type(exc).__name__}: {exc}"
-        )
+        notify(f"실행 오류: {type(exc).__name__}: {exc}")
         raise
