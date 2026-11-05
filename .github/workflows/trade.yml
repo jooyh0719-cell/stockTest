@@ -31,6 +31,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests yfinance
 
+      - name: Debug Trigger
+        run: |
+          echo "Event: ${{ github.event_name }}"
+          echo "Schedule: ${{ github.event.schedule }}"
+          echo "Workflow: ${{ github.workflow }}"
+          echo "Run ID: ${{ github.run_id }}"
+          echo "UTC: $(date -u)"
+          echo "KST: $(TZ=Asia/Seoul date)"
+
       - name: Run trading script
         env:
           TOSS_CLIENT_ID: ${{ secrets.TOSS_CLIENT_ID }}
@@ -40,12 +49,3 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py
-
-      - name: Debug Schedule
-        run: |
-          echo "Event: ${{ github.event_name }}"
-          echo "Schedule: ${{ github.event.schedule }}"
-          echo "UTC time:"
-          date -u
-          echo "KST time:"
-          TZ=Asia/Seoul date
