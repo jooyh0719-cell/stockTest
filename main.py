@@ -332,7 +332,8 @@ def get_holding(token, symbol):
         )
 
         avg_value = (
-            item.get("averagePrice")
+            item.get("averagePurchasePrice")
+            or item.get("averagePrice")
             or item.get("average_price")
             or item.get("avgPrice")
             or item.get("avg_price")
